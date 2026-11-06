@@ -150,7 +150,7 @@ Exit codes in `-p` mode:
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Error, budget exhausted, missing API key, or the engine failed to start |
+| `1` | Error, budget exhausted, a permission prompt with no terminal to answer it, missing API key, or the engine failed to start |
 | `3` | A `/goal` is unfinished, was refused, or was dropped after an error |
 | `130` | Interrupted with Ctrl+C |
 

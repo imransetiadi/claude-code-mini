@@ -938,6 +938,7 @@ class UI:
         self.bg_log = True  # tampilkan log aktivitas agent background di layar (/tasks log)
         self.goal_explained = False  # penjelasan panjang /goal cuma untuk goal pertama di run ini
         self.exit_code = 0
+        self.perm_unanswerable = False  # izin ditolak otomatis karena tidak ada terminal (mis. -p di CI)
         self.begin_turn(None)
         self.reset()
         self.attach(None)
@@ -1794,7 +1795,9 @@ class UI:
             if turn_cost > 0 or msg.duration_ms >= 1000:  # mis. /compact: ada biaya/waktu -> tetap tampilkan
                 console.print(f"[green]✓ Selesai[/][dim]  ·  {stats}[/]")
             return  # jawaban seketika (/goal status, dll): tanpa "✓ Selesai · 0 langkah"
-        if self.interrupted:
+        if self.interrupted and self.perm_unanswerable:
+            console.print("[yellow]⏹ Giliran dihentikan: ada izin yang tidak bisa ditanyakan (tanpa terminal)[/]", end="")
+        elif self.interrupted:
             console.print("[yellow]⏹ Dihentikan oleh user[/] [dim]· ketik instruksi baru, atau 'lanjutkan'[/]", end="")
         elif msg.subtype == "error_max_budget_usd":
             console.print(f"[red]✗ Berhenti: batas budget ${self.args.budget} tercapai.[/]")
@@ -2077,10 +2080,17 @@ class UI:
 
     def cancelled(self, what: str) -> PermissionResultDeny:
         """Ctrl+C / Ctrl+D di pertanyaan izin = tolak (saat giliran kita: sekalian hentikan Claude)."""
-        console.print(f"[yellow]✗ {what} dibatalkan (Ctrl+C)[/]")
+        if not sys.stdin.isatty():  # mis. CI / cron: tidak ada yang bisa menjawab pertanyaan izin
+            self.perm_unanswerable = True
+            console.print(f"[yellow]✗ {what} ditolak: tidak ada terminal untuk menjawab.[/] "
+                          "[dim]Siapkan aturan izin di .claude/settings.json, atau pakai --yolo di sandbox.[/]")
+            why = "Tidak ada user yang bisa menyetujui permintaan ini (berjalan tanpa terminal)."
+        else:
+            console.print(f"[yellow]✗ {what} dibatalkan (Ctrl+C)[/]")
+            why = "User membatalkan permintaan ini (Ctrl+C)."
         if self.fg_active:
             self.interrupted = True
-        return PermissionResultDeny(message="User membatalkan permintaan ini (Ctrl+C).", interrupt=self.fg_active)
+        return PermissionResultDeny(message=why, interrupt=self.fg_active)
 
     def ask_tool(self, tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> Any:
         summary, detail = self.describe_tool(tool, inp, full=True)
@@ -2833,8 +2843,8 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
                 ui.exit_code = 3
             elif ui.goal_refused or ui.goal_failed:  # ditolak / dihapus setelah error: jangan terlihat seperti sukses
                 ui.exit_code = 3
-            elif main_interrupted:  # dihentikan dengan Ctrl+C
-                ui.exit_code = 130
+            elif main_interrupted:  # Ctrl+C = 130; izin yang tak bisa ditanyakan (tanpa terminal) = gagal biasa
+                ui.exit_code = 1 if ui.perm_unanswerable else 130
             elif main_result is not None and (main_result.is_error or main_result.subtype != "success"):
                 ui.exit_code = 1  # error / budget habis: jangan terlihat sukses di script & CI
             return "exit"

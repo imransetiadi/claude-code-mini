@@ -654,9 +654,9 @@ Exit code:
 | Kode | Arti |
 |---|---|
 | `0` | sukses |
-| `1` | gagal: error, budget habis, API key belum di-set, atau mesin Claude gagal start |
+| `1` | gagal: error, budget habis, pertanyaan izin yang tidak bisa dijawab karena tidak ada terminal, API key belum di-set, atau mesin Claude gagal start |
 | `3` | goal dari `/goal` belum selesai, ditolak, atau dihapus karena error |
-| `130` | dihentikan dengan Ctrl+C |
+| `130` | dihentikan dengan Ctrl+C di terminal |
 
 Contoh di script:
 
@@ -668,9 +668,10 @@ else
 fi
 ```
 
-Soal izin: di mode `-p`, pertanyaan izin tetap muncul kalau ada terminal. Di CI atau cron (tanpa input),
-pertanyaan izin otomatis dijawab "tidak" dan gilirannya dihentikan. Siapkan aturan izin di
-`.claude/settings.json` (bagian 15), atau jalankan di container sekali pakai dengan `--yolo`.
+Soal izin: di mode `-p`, pertanyaan izin tetap muncul kalau ada terminal. Di CI atau cron (tanpa terminal),
+pertanyaan izin otomatis ditolak (`✗ Izin Bash ditolak: tidak ada terminal untuk menjawab.`), gilirannya
+dihentikan, dan exit code-nya 1. Siapkan aturan izin di `.claude/settings.json` (bagian 15), atau jalankan di
+container sekali pakai dengan `--yolo`.
 
 ## 14. Perintah bawaan Claude Code dan perintah custom
 
