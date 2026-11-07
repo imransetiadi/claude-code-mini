@@ -157,8 +157,10 @@ Exit codes in `-p` mode:
 ## Full tutorial
 
 The complete step-by-step guide covers installation, the screen layout, permissions, background agents, `/goal`,
-CI usage, running on a server over SSH, and troubleshooting. It is written in Indonesian, like the app:
-**[docs/TUTORIAL.md](docs/TUTORIAL.md)**.
+CI usage, running on a server over SSH, and troubleshooting:
+
+- **[English](docs/TUTORIAL.en.md)**
+- **[Bahasa Indonesia](docs/TUTORIAL.md)**
 
 ## Update and uninstall
 
@@ -187,3 +189,7 @@ Tested on macOS and on Ubuntu 26.04 with Python 3.13 and 3.14, using claude-agen
 - API usage is billed to the Anthropic account that owns the key. Use `--budget` to cap a session.
 - `--yolo` lets Claude run any command without asking. Use it only in a disposable sandbox.
 - Use of Claude is subject to [Anthropic's terms](https://www.anthropic.com/legal/commercial-terms).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Imran Setiadi.

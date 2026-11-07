@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Imran Setiadi
 """
 claude-code-mini - Claude Code versi mini yang jalan pakai API key (Claude Agent SDK).
 https://github.com/imransetiadi/claude-code-mini

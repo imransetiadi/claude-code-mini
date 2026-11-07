@@ -1,5 +1,7 @@
 # Tutorial Lengkap claude-code-mini
 
+[English](TUTORIAL.en.md) · **Bahasa Indonesia**
+
 Panduan ini membawamu dari nol sampai memakai fitur lanjutan: agent background, `/goal`, dan mode sekali
 jalan untuk script/CI. Contoh-contohnya diambil dari pemakaian nyata di macOS dan Ubuntu 26.04.
 
@@ -901,3 +903,7 @@ Kalau `XDG_DATA_HOME` di-set, folder data pindah ke `$XDG_DATA_HOME/claude-code-
 | `IS_SANDBOX=1` | izinkan mode YOLO sebagai root (hanya untuk container/VM sekali pakai) |
 | `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` | batas penolakan beruntun `/goal` (bawaan Claude Code: 8) |
 | `XDG_DATA_HOME` | lokasi folder data (bawaan: `~/.local/share`) |
+
+## Lisensi
+
+claude-code-mini dirilis dengan [Apache License 2.0](../LICENSE).
