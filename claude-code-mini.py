@@ -44,6 +44,12 @@ Di dalam sesi (ketik ? atau /help):
     Esc / Ctrl+C     hentikan Claude saat sedang bekerja
     Ctrl+C 2x / Ctrl+D di prompt  -> keluar
 
+Kolom chat tetap bisa dipakai saat Claude sedang bekerja (seperti Claude Code): pesan yang
+dikirim saat itu langsung diteruskan dan dibaca Claude begitu langkah (tool) yang sedang jalan
+selesai - tidak perlu menunggu giliran berakhir. /perintah, !command, dan # catatan yang diketik
+saat Claude bekerja antre sampai giliran selesai; /tasks, /help, /status, /cost, /stop, /mode
+langsung dijalankan.
+
 Agent / command background tetap terpantau walau Claude sudah selesai menjawab:
 progresnya (tool terakhir, jumlah tool, token, durasi, baris output terakhir) tampil
 live di bawah prompt, log aktivitasnya muncul di layar, dan begitu selesai Claude
@@ -57,6 +63,7 @@ import asyncio
 import atexit
 import contextlib
 import difflib
+import inspect
 import io
 import json
 import logging
@@ -232,9 +239,10 @@ except ImportError:
 
 try:
     from prompt_toolkit import PromptSession
-    from prompt_toolkit.application import run_in_terminal
-    from prompt_toolkit.application.current import set_app
+    from prompt_toolkit.application import in_terminal, run_in_terminal
+    from prompt_toolkit.application.current import get_app, set_app
     from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.filters import Condition
     from prompt_toolkit.formatted_text import ANSI
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
@@ -398,6 +406,10 @@ SHORTCUTS_TEXT = """\
   [cyan]Esc[/] / [cyan]Ctrl+C[/]    hentikan Claude saat sedang bekerja (juga saat menanggapi tugas background)
   [cyan]Ctrl+C 2x[/] / [cyan]Ctrl+D[/]  keluar
   akhiri baris dengan [cyan]\\\\[/] atau [cyan]Alt+Enter[/]  pesan multi-baris (paste multi-baris otomatis jadi satu pesan)
+[bold]Saat Claude bekerja:[/] kolom chat tetap bisa dipakai.
+  [cyan]Enter[/]  pesan langsung dikirim; Claude membacanya begitu langkah (tool) yang sedang jalan selesai
+  /perintah, !command, # catatan  antre sampai giliran selesai ([cyan]↑[/] di kolom kosong = ambil kembali)
+  /tasks /help /status /cost /stop /mode  langsung dijalankan
 [bold]Tugas background:[/] progres agent/command background tampil live di bawah prompt.
   [cyan]/tasks[/] daftar & progres · [cyan]/tasks 2[/] detail, log & output · [cyan]/stop 2[/] hentikan
 [bold]Goal:[/] [cyan]/goal[/] [dim]kondisi[/]   Claude kerja terus sampai pemeriksa menilai kondisinya terpenuhi · [cyan]/goal[/] status · [cyan]/goal clear[/] batal
@@ -409,6 +421,11 @@ SHORTCUTS_TEXT = """\
 # Kata yang diterima Claude Code untuk membatalkan goal (+ padanan Indonesia yang kita ubah ke "clear").
 GOAL_CLEAR_WORDS = {"clear", "stop", "off", "reset", "none", "cancel"}
 GOAL_CLEAR_ALIASES = {"batal", "hapus"}
+
+# Perintah lokal yang aman dijalankan saat Claude sedang bekerja (cuma membaca status / tidak menyentuh percakapan).
+IMMEDIATE_COMMANDS = {"/help", "/tasks", "/status", "/cost", "/allow", "/stop", "/mode"}
+DRAIN = object()  # hasil khusus prompt: ditutup sementara untuk memproses antrean (bukan ketikan user)
+BUSY_HINT = "ketik pesan susulan… Enter = kirim (dibaca Claude setelah langkah ini) · Esc = hentikan"
 
 
 class WrongAuthSource(Exception):
@@ -817,9 +834,10 @@ class Completions(Completer):
 
 
 class PromptInput:
-    """Prompt utama. Selama prompt aktif, pesan dari mesin Claude (progres agent background, dll)
-    tetap ditampilkan DI ATAS prompt tanpa merusak ketikan, dan status tugas background
-    tampil live di toolbar bawah."""
+    """Prompt utama. Prompt ini tetap aktif saat Claude bekerja (seperti Claude Code): pesan dari mesin
+    Claude (output tool, progres agent background, dll) dicetak DI ATAS prompt tanpa merusak ketikan,
+    status kerja + tugas background tampil live di toolbar bawah, dan Enter saat Claude bekerja langsung
+    mengirim pesan susulan / mengantrekan perintah (lihat UI.submit_while_busy)."""
 
     def __init__(self, ui: "UI"):
         self.ui = ui
@@ -827,6 +845,10 @@ class PromptInput:
         self.commands: dict[str, str] = dict(LOCAL_COMMANDS)
         self.session: PromptSession | None = None
         self.interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        self.queue: deque[str] = deque()  # ketikan saat Claude bekerja yang menunggu giliran selesai (/perintah, !command, …)
+        self.draft = ""  # ketikan yang belum dikirim saat prompt ditutup sementara (drain), dikembalikan ke prompt berikutnya
+        self.ticker: asyncio.Task | None = None  # gambar ulang toolbar (spinner) saat Claude bekerja
+        self.gap = False  # cetak baris kosong sebelum prompt (tidak untuk prompt pertama, header sudah berjarak)
 
     def path_matches(self, text: str) -> list[str]:
         frag = text[1:]
@@ -852,6 +874,9 @@ class PromptInput:
         ui = self.ui
         kb = KeyBindings()
 
+        def buffer_empty() -> bool:
+            return not get_app().current_buffer.text
+
         @kb.add("s-tab")
         def _cycle(event: Any) -> None:  # ganti mode izin di tempat, ketikan tidak hilang
             ui.cycle_mode()
@@ -871,6 +896,13 @@ class PromptInput:
                 return
             if state and is_cmd and state.current_completion is None and state.completions:
                 buf.apply_completion(state.completions[0])  # "/cont" + Enter -> /context
+            if ui.busy():  # Claude sedang bekerja: prompt tetap aktif, pesan dikirim / diantrekan dari sini
+                text = buf.text.strip()
+                if text:
+                    buf.reset(append_to_history=True)
+                    ui.submit_while_busy(text)
+                event.app.invalidate()
+                return
             buf.validate_and_handle()
 
         @kb.add("escape", "enter")
@@ -882,29 +914,96 @@ class PromptInput:
             buf = event.current_buffer
             if buf.complete_state:
                 buf.cancel_completion()
-            elif ui.auto_running():
-                ui.interrupt_auto()  # Claude sedang menanggapi tugas background -> hentikan
+            else:
+                ui.interrupt_turn()  # Claude sedang bekerja (giliran kita / otomatis) -> hentikan
 
-        return PromptSession(
+        @kb.add("c-c")
+        def _ctrl_c(event: Any) -> None:
+            if ui.interrupt_turn():  # Claude sedang bekerja -> hentikan dulu; Ctrl+C berikutnya baru ke "keluar"
+                return
+            event.app.exit(exception=KeyboardInterrupt(), style="class:aborting")
+
+        @kb.add("c-d", filter=Condition(buffer_empty))
+        def _ctrl_d(event: Any) -> None:
+            if ui.busy() or ui.auto_running():  # tanya dulu di atas prompt, giliran yang jalan ikut mati
+                asyncio.ensure_future(ui.confirm_exit_above())
+            else:
+                event.app.exit(exception=EOFError(), style="class:exiting")
+
+        @kb.add("up", filter=Condition(lambda: bool(self.queue) and buffer_empty()))
+        def _unqueue(event: Any) -> None:  # ↑ di kolom kosong: ambil kembali ketikan terakhir yang masih antre
+            event.current_buffer.insert_text(self.queue.pop())
+
+        session = PromptSession(
             history=FileHistory(str(HISTORY_FILE)),
             completer=Completions(self),
             complete_while_typing=True,
             reserve_space_for_menu=4,
             key_bindings=kb,
             bottom_toolbar=ui.toolbar,
-            refresh_interval=1.0,  # toolbar (progres background) diperbarui tiap detik
+            placeholder=self.placeholder,
+            refresh_interval=1.0,  # toolbar diperbarui tiap detik saat idle (saat Claude bekerja: lihat _tick)
             prompt_continuation=ANSI("\x1b[1;36m… \x1b[0m"),
             style=PT_STYLE,
         )
+        session.app.ttimeoutlen = 0.2  # Esc dikenali lebih cepat (bawaan 0.5 detik)
+        return session
+
+    def placeholder(self) -> Any:
+        """Petunjuk di kolom kosong saat Claude bekerja."""
+        return ANSI(f"\x1b[2m{BUSY_HINT}\x1b[0m") if self.ui.busy() else ""
+
+    async def _tick(self) -> None:
+        """Gambar ulang toolbar lebih sering saat Claude bekerja (spinner), tiap detik saat idle."""
+        while True:
+            await asyncio.sleep(0.12 if self.ui.busy() or self.ui.auto_running() else 1.0)
+            app = self.session.app if self.session else None
+            if app is not None and app.is_running:
+                app.invalidate()
 
     async def read(self, prefill: str = "") -> str:
         if not self.interactive:  # stdin/stdout bukan terminal (pipe): input() biasa
+            console.print()
             line = await asyncio.get_running_loop().run_in_executor(None, input, "› ")
             return line.strip()
         if self.session is None:
             self.session = self._build()
-        text = await self.session.prompt_async(ANSI(PROMPT_TEXT), default=prefill)
-        return text.strip()
+        if self.ticker is None:
+            self.ticker = asyncio.ensure_future(self._tick())
+        while True:
+            err, self.ui.turn_error = self.ui.turn_error, None
+            if err is not None:  # giliran (task) gagal saat prompt sedang tidak aktif
+                raise err
+            if self.queue and not self.ui.busy():  # antrean dari saat Claude bekerja: diproses seperti diketik sekarang
+                text = self.queue.popleft()
+                console.print()
+                console.print(Text.assemble(("› ", "bold cyan"), (text, "")))
+                self.gap = True
+                return text
+            default, self.draft = prefill or self.draft, ""  # ketikan yang disimpan drain() kembali ke prompt
+            self.session.app.erase_when_done = False
+            if self.gap:  # jarak antara ketikan sebelumnya dan output Claude yang akan dicetak di atas prompt ini
+                console.print()
+            self.gap = True
+            # Baris kosong ikut jadi bagian prompt: tetap ada di atas "› …" walau output Claude dicetak di atas prompt.
+            result = await self.session.prompt_async(ANSI("\n" + PROMPT_TEXT), default=default, handle_sigint=False)
+            if result is DRAIN:  # prompt ditutup sementara oleh drain(): proses antrean dulu
+                continue
+            return result.strip()
+
+    def drain(self) -> None:
+        """Giliran selesai dan ada antrean: tutup prompt sementara (ketikan disimpan) supaya loop utama
+        memproses antrean seperti ketikan biasa; read() membuka prompt lagi dengan ketikan tadi."""
+        app = self.session.app if self.session else None
+        if app is None or not app.is_running:
+            return
+        if not self.queue or self.ui.busy():
+            app.invalidate()
+            return
+        self.draft = app.current_buffer.text
+        app.erase_when_done = True  # baris prompt dihapus supaya tidak terlihat seperti pesan yang terkirim
+        with contextlib.suppress(Exception):
+            app.exit(result=DRAIN)
 
     async def run_above(self, func: Any) -> Any:
         """Jalankan func (cetak output / tanya izin) di atas prompt yang sedang aktif, lalu gambar ulang prompt."""
@@ -914,12 +1013,35 @@ class PromptInput:
         with set_app(app):
             return await run_in_terminal(func)
 
-    def abort(self, err: BaseException) -> None:
-        """Hentikan prompt yang sedang aktif dengan error (mis. mesin Claude mati)."""
+    async def above(self, func: Any) -> Any:
+        """Seperti run_above, tapi func boleh async. Selama func jalan, prompt disembunyikan dan terminal
+        dalam mode normal (input() bisa dipakai); setelah itu prompt digambar ulang."""
+
+        async def call() -> Any:
+            r = func()
+            return await r if inspect.isawaitable(r) else r
+
         app = self.session.app if self.session else None
-        if app is not None and app.is_running:
+        if app is None or not app.is_running:
+            return await call()
+        with set_app(app):
+            async with in_terminal():
+                return await call()
+
+    def abort(self, err: BaseException) -> None:
+        """Hentikan prompt yang sedang aktif dengan error (mis. mesin Claude mati). Kalau prompt sedang
+        tidak aktif, error disimpan dan dilempar oleh read() berikutnya."""
+        app = self.session.app if self.session else None
+        if app is not None and app.is_running and app.future is not None and not app.future.done():
             with contextlib.suppress(Exception):
                 app.exit(exception=err)
+                return
+        self.ui.turn_error = err
+
+    def stop(self) -> None:
+        if self.ticker is not None:
+            self.ticker.cancel()
+            self.ticker = None
 
 
 class UI:
@@ -941,6 +1063,7 @@ class UI:
         self.goal_explained = False  # penjelasan panjang /goal cuma untuk goal pertama di run ini
         self.exit_code = 0
         self.perm_unanswerable = False  # izin ditolak otomatis karena tidak ada terminal (mis. -p di CI)
+        self.exit_confirmed = False  # Ctrl+D saat Claude bekerja sudah dikonfirmasi (jangan tanya lagi di loop utama)
         self.begin_turn(None)
         self.reset()
         self.attach(None)
@@ -972,6 +1095,11 @@ class UI:
         self.quiet_turn = False  # giliran yang sedang jalan = cek status goal (bukan prompt user)
         self.auto_during_quiet = False  # giliran otomatis ternyata jalan saat cek status goal dikirim
         self.turn_prompt = ""
+        self.turn_task: asyncio.Task | None = None  # giliran user yang jalan sebagai task (prompt tetap aktif)
+        self.turn_error: BaseException | None = None  # error dari task giliran, dilempar oleh prompt.read()
+        self.sent_pending: deque[list[Any]] = deque()  # [isi terkirim, label] pesan susulan yang belum dibaca Claude
+        self.tui_turn = False  # giliran kita jalan dengan prompt aktif: spinner & Esc lewat prompt, bukan Live/KeyWatcher
+        self.cont_seq = 0  # nomor urut giliran lanjutan (continue_turn), untuk pengaman waktunya
 
     def reset(self) -> None:
         """Mulai percakapan baru dari nol (awal script, /clear, /resume)."""
@@ -1004,6 +1132,7 @@ class UI:
         self.printed_text = False
         self.checkpoint_label = label
         self.interrupted = False
+        self.stopping = False  # Esc / Ctrl+C sudah ditekan untuk giliran ini
         self.waiting_bg = False
         self.turn_checks = 0  # cek goal (penolakan pemeriksa) di giliran ini
         self.turn_capped = False  # batas Stop hook tercapai di giliran ini
@@ -1053,7 +1182,7 @@ class UI:
 
     def spin_start(self, tool: str | None = None) -> None:
         self.current_tool = tool
-        if not self.fg_active:  # spinner cuma saat giliran kita jalan; saat idle progres ada di toolbar
+        if not self.fg_active or self.tui_turn:  # Live cuma saat giliran jalan tanpa prompt (-p); selain itu spinner ada di toolbar
             return
         if not self.spinning:
             # Live baru tiap kali: Live lama "ingat" tinggi areanya dan akan menghapus baris yang baru dicetak.
@@ -1124,14 +1253,33 @@ class UI:
             t.append(" · ? untuk bantuan", style="dim")
         return t
 
+    def queue_rows(self) -> list[Text]:
+        """Pesan susulan yang belum dibaca Claude + ketikan yang antre sampai giliran selesai (toolbar)."""
+        rows: list[Text] = []
+        pending = [label for _, label in list(self.sent_pending)]
+        queued = list(self.prompt.queue)
+        for what, items in (("dibaca Claude setelah langkah ini", pending), ("setelah giliran selesai", queued)):
+            for text in items[:2]:
+                rows.append(Text.assemble(("  ⏳ ", "yellow"), (f"{what}: ", "dim"), (clip(oneline(text), 70), "")))
+            if len(items) > 2:
+                rows.append(Text(f"     … +{len(items) - 2} lagi", style="dim"))
+        if queued:
+            rows[-1].append("  (↑ di kolom kosong = ambil kembali)", style="dim")
+        return rows
+
     def toolbar(self) -> Any:
-        """Toolbar di bawah prompt: mode/model/biaya + progres live tugas background (refresh tiap detik)."""
+        """Toolbar di bawah prompt: mode/model/biaya, spinner saat Claude bekerja, pesan yang antre,
+        progres live tugas background."""
         try:
             width = max(shutil.get_terminal_size().columns - 1, 20)
             lines = [self.footer()]
-            if self.auto_running():
+            if self.fg_active:  # giliran kita jalan dengan prompt aktif: spinner di sini (bukan Live)
+                self.spinner.update(text=self.status_text())
+                lines.append(self.spinner.render(time.monotonic()))  # type: ignore[arg-type]
+            elif self.auto_running():
                 lines.append(Text(f"  ✻ Claude menanggapi tugas background… ({fmt_dur(time.monotonic() - self.auto_start)}"
                                   " · esc untuk berhenti)", style="cyan"))
+            lines += self.queue_rows()
             lines += self.task_rows(width)
             for line in lines:
                 line.truncate(width, overflow="ellipsis")
@@ -1168,6 +1316,148 @@ class UI:
             await self.prompt.run_above(lambda: write_raw(out))
         else:
             console.print(*objs, **kw)
+
+    def note(self, *objs: Any, **kw: Any) -> None:
+        """Versi sinkron say(): aman dipanggil dari key binding / callback."""
+        if self.prompt.active():
+            asyncio.ensure_future(self.say(*objs, **kw))
+        else:
+            console.print(*objs, **kw)
+
+    # ---------- kolom chat saat Claude bekerja ----------
+    def busy(self) -> bool:
+        """Giliran user (yang kita kirim) sedang jalan -> Enter di prompt = pesan susulan / antrean."""
+        return self.turn_task is not None or self.fg_active
+
+    def can_steer(self) -> bool:
+        """Pesan susulan bisa langsung dikirim: giliran kita jalan dengan prompt aktif (bukan cek status goal)."""
+        return (self.fg_active and self.tui_turn and not self.quiet_turn and not self.waiting_bg
+                and self.client is not None and self.pump_error is None)
+
+    def submit_while_busy(self, text: str) -> None:
+        """Enter saat Claude bekerja. Pesan biasa langsung dikirim - Claude Code menyisipkannya begitu tool call
+        yang sedang jalan selesai ("steering", persis Claude Code). Perintah ringan (/tasks, /help, …) dijalankan
+        saat itu juga; sisanya (/clear, !command, # catatan, …) antre sampai giliran selesai. Begitu ada yang antre,
+        ketikan berikutnya ikut antre supaya urutannya tetap seperti yang diketik."""
+        if text == "?":
+            text = "/help"
+        word = text.split()[0] if text.startswith("/") else ""
+        plain = not text.startswith(("/", "!", "#")) or text.startswith("##")
+        if not self.prompt.queue and word in IMMEDIATE_COMMANDS:
+            asyncio.ensure_future(self.run_local(text))
+        elif plain and not self.prompt.queue and self.can_steer():
+            asyncio.ensure_future(self.steer(text))
+        else:
+            self.prompt.queue.append(text)
+
+    async def run_local(self, text: str) -> None:
+        """Perintah ringan saat Claude bekerja: dijalankan di atas prompt saat itu juga. Panggilan ke mesin Claude
+        (/stop, /mode) dijadwalkan terpisah supaya pembaca pesan tidak ikut menunggu di balik prompt."""
+        name, _, arg = text.partition(" ")
+        arg = arg.strip()
+        client = self.client
+
+        async def job() -> None:
+            console.print(Text.assemble(("› ", "bold cyan"), (text, "")))
+            if name == "/stop":
+                targets = stop_targets(self, arg)
+                for t in targets:
+                    console.print(f"[yellow]⏹ Menghentikan #{t.num} {clip(oneline(t.desc), 60)}…[/]")
+                if targets and client is not None:
+                    asyncio.ensure_future(stop_bg(client, self, targets))
+            elif name == "/mode" and arg in MODES:
+                self.args.mode = arg
+                if client is not None:
+                    asyncio.ensure_future(self._call(client.set_permission_mode(arg)))
+                console.print(f"[green]✓ Mode izin diganti ke {arg}[/]")
+            elif client is not None:
+                await handle_command(text, client, self)
+
+        try:
+            await self.prompt.above(job)
+        except Exception as e:
+            self.note(f"[red]✗ {name} gagal: {e}[/]")
+
+    async def steer(self, text: str) -> None:
+        """Pesan susulan: dikirim sekarang juga. Claude Code menyisipkannya setelah tool call yang sedang jalan
+        selesai; kalau giliran keburu selesai (atau dihentikan), pesan ini otomatis jadi giliran berikutnya
+        (lihat continue_turn). Gemanya ("› …") dicetak begitu Claude benar-benar membacanya."""
+        entry: list[Any] = [None, text]  # dicatat dulu: kalau hasil giliran datang duluan, giliran dianggap berlanjut
+        self.sent_pending.append(entry)
+        try:
+            to_send = await self.prompt.above(lambda: compose(self, text))
+            entry[0] = to_send
+            if self.client is None:
+                raise ClaudeSDKError("mesin Claude tidak aktif")
+            await self.client.query(to_send)
+        except Exception as e:
+            with contextlib.suppress(ValueError):
+                self.sent_pending.remove(entry)
+            self.note(f"[red]✗ Gagal mengirim pesan susulan: {e}[/]")
+
+    def take_sent(self, content: str) -> str | None:
+        """Gema pesan user dari mesin Claude: cocokkan dengan pesan susulan yang menunggu -> labelnya."""
+        for entry in list(self.sent_pending):
+            sent, label = entry
+            if sent is not None and sent.strip() == content.strip():
+                self.sent_pending.remove(entry)
+                return label
+        return None
+
+    def interrupt_turn(self) -> bool:
+        """Esc / Ctrl+C saat Claude bekerja: hentikan giliran kita (atau giliran otomatis).
+        True kalau ada yang dihentikan."""
+        if self.fg_active:
+            if self.stopping:
+                return False
+            self.stopping = True
+            fut = self.turn_future
+            lead = "" if self.tui_turn else "\n"  # tanpa prompt: spinner Live baru saja dihapus, mulai di baris baru
+            if self.quiet_turn:  # cek status goal: cukup berhenti menunggu; jangan hentikan giliran Claude yang mungkin jalan
+                self.goal_late = True
+                self.spin_stop()
+                self.note(f"{lead}[dim]cek status goal dilewati[/]")
+                if fut is not None and not fut.done():
+                    fut.set_result(None)
+                return True
+            self.interrupted = True
+            self.spin_stop()
+            self.note(f"{lead}[yellow]⏹ Menghentikan Claude…[/]")
+            if self.client:
+                asyncio.ensure_future(self._call(self.client.interrupt()))
+            return True
+        if self.auto_running() and not self.auto_interrupted:
+            self.interrupt_auto()
+            return True
+        return False
+
+    async def confirm_exit_above(self) -> None:
+        """Ctrl+D saat Claude bekerja: tanya dulu di atas prompt; kalau ya, prompt ditutup (loop utama keluar)."""
+        if await self.prompt.above(lambda: confirm_drop_tasks(self, "keluar")):
+            self.exit_confirmed = True
+            self.prompt.abort(EOFError())
+
+    def on_turn_finished(self) -> None:
+        """Task giliran selesai: proses antrean (kalau ada) lewat prompt, atau cukup segarkan toolbar."""
+        self.turn_task = None
+        self.prompt.drain()
+
+    def continue_turn(self) -> None:
+        """Hasil giliran datang padahal masih ada pesan susulan yang belum dibaca Claude: Claude Code langsung
+        memulai giliran baru untuk pesan itu, jadi giliran kita (spinner, Esc, antrean) tetap dianggap jalan."""
+        sent, label = self.sent_pending[0]
+        self.begin_turn(label)
+        self.quiet_turn, self.turn_prompt = False, sent or ""
+        self.cont_seq += 1
+        asyncio.get_running_loop().call_later(10, self._continuation_check, self.turn_future, self.cont_seq)
+
+    def _continuation_check(self, fut: asyncio.Future, seq: int) -> None:
+        if seq != self.cont_seq or fut is not self.turn_future or fut.done() or self.cli_busy:
+            return
+        for _, label in list(self.sent_pending):  # mesin tidak memulai giliran untuk pesan ini: jangan menunggu selamanya
+            self.note(f"[yellow]⚠ Pesan susulan tidak diproses Claude:[/] {rich_escape(clip(oneline(label), 80))}")
+        self.sent_pending.clear()
+        fut.set_result(self.last_result)
 
     # ---------- format tampilan tool ----------
     def rel(self, p: str) -> str:
@@ -1616,11 +1906,18 @@ class UI:
             elif (not nested and blocks and isinstance(blocks[0], TextBlock)
                   and blocks[0].text.startswith("Stop hook feedback:")):
                 self.on_stop_feedback(blocks[0].text)  # pemeriksa goal: "belum terpenuhi" + alasannya
-            elif (msg.uuid and not nested and self.checkpoint_label is not None and isinstance(msg.content, str)
-                  and is_ours(getattr(msg, "origin", None))):
-                # Gema dari prompt user sendiri (bukan notifikasi otomatis) -> titik untuk /rewind
-                self.checkpoints.append((msg.uuid, self.checkpoint_label))
-                self.checkpoint_label = None
+            elif not nested and isinstance(msg.content, str) and is_ours(getattr(msg, "origin", None)):
+                label = self.take_sent(msg.content)
+                if label is not None:  # pesan susulan baru dibaca Claude -> tampilkan di titik ini
+                    self.spin_stop()
+                    console.print()
+                    console.print(Text.assemble(("› ", "bold cyan"), (label, "")))
+                    self.checkpoint_label = label
+                    self.spin_start(self.current_tool)
+                if msg.uuid and self.checkpoint_label is not None:
+                    # Gema dari prompt user sendiri (bukan notifikasi otomatis) -> titik untuk /rewind
+                    self.checkpoints.append((msg.uuid, self.checkpoint_label))
+                    self.checkpoint_label = None
         elif isinstance(msg, ResultMessage):
             self.on_result(msg)
 
@@ -1688,7 +1985,9 @@ class UI:
             self.cli_busy = False
             fut = self.turn_future
             if fut is not None and not fut.done():
-                if self.result_ours:
+                if self.result_ours and self.sent_pending:  # pesan susulan belum dibaca: giliran berlanjut
+                    self.continue_turn()
+                elif self.result_ours:
                     fut.set_result(msg)
                 else:  # pengaman: prompt kita ternyata tidak pernah diproses
                     asyncio.get_running_loop().call_later(15, self._stale_check, fut)
@@ -1799,6 +2098,8 @@ class UI:
             return  # jawaban seketika (/goal status, dll): tanpa "✓ Selesai · 0 langkah"
         if self.interrupted and self.perm_unanswerable:
             console.print("[yellow]⏹ Giliran dihentikan: ada izin yang tidak bisa ditanyakan (tanpa terminal)[/]", end="")
+        elif self.interrupted and self.sent_pending:  # pesan susulan menunggu: Claude Code lanjut ke pesan itu
+            console.print("[yellow]⏹ Dihentikan oleh user[/] [dim]· lanjut ke pesan susulan[/]", end="")
         elif self.interrupted:
             console.print("[yellow]⏹ Dihentikan oleh user[/] [dim]· ketik instruksi baru, atau 'lanjutkan'[/]", end="")
         elif msg.subtype == "error_max_budget_usd":
@@ -2318,44 +2619,33 @@ async def pump(client: ClaudeSDKClient, ui: UI) -> None:
 
 async def run_turn(client: ClaudeSDKClient, ui: UI, prompt: str, label: str | None = None,
                    quiet: bool = False) -> None:
-    """Kirim satu prompt dan tunggu hasilnya. quiet=True untuk perintah lokal cepat (cek status /goal)."""
+    """Kirim satu prompt dan tunggu hasilnya. quiet=True untuk perintah lokal cepat (cek status /goal).
+
+    Dipanggil dari task giliran (mode interaktif, ui.turn_task) -> prompt tetap aktif: spinner tampil di
+    toolbar dan Esc/Ctrl+C ditangani key binding prompt. Selain itu (-p, pipe, cek goal saat start):
+    spinner Live + KeyWatcher + SIGINT seperti biasa."""
     loop = asyncio.get_running_loop()
-    stopping = False
     if ui.pump_error:
         raise ui.pump_error
 
     fut = loop.create_future()
-
-    def interrupt() -> None:
-        nonlocal stopping
-        if stopping:
-            return
-        stopping = True
-        if quiet:  # cek status goal: cukup berhenti menunggu; jangan hentikan giliran Claude yang mungkin sedang jalan
-            ui.goal_late = True
-            ui.spin_stop()
-            console.print("\n[dim]cek status goal dilewati[/]")
-            if not fut.done():
-                fut.set_result(None)
-            return
-        ui.interrupted = True
-        ui.spin_stop()
-        console.print("\n[yellow]⏹ Menghentikan Claude…[/]")
-        asyncio.ensure_future(ui._call(client.interrupt()))
-
-    try:
-        loop.add_signal_handler(signal.SIGINT, interrupt)
-        has_handler = True
-    except (NotImplementedError, RuntimeError):  # mis. Windows
-        has_handler = False
+    tui = ui.turn_task is not None
+    has_handler = False
+    if not tui:
+        try:
+            loop.add_signal_handler(signal.SIGINT, ui.interrupt_turn)
+            has_handler = True
+        except (NotImplementedError, RuntimeError):  # mis. Windows
+            pass
 
     ui.begin_turn(label)
-    ui.quiet_turn, ui.turn_prompt = quiet, prompt
+    ui.quiet_turn, ui.turn_prompt, ui.tui_turn = quiet, prompt, tui
     if quiet:
         ui.verb = "Mengecek status goal"
     ui.turn_future, ui.echo_seen, ui.fg_active = fut, False, True
-    ui.keys.start(loop, interrupt)
-    ui.spin_start()
+    if not tui:
+        ui.keys.start(loop, ui.interrupt_turn)
+        ui.spin_start()
     try:
         await client.query(prompt)
         ui.cli_busy = True
@@ -2363,12 +2653,27 @@ async def run_turn(client: ClaudeSDKClient, ui: UI, prompt: str, label: str | No
     finally:
         ui.fg_active = False
         ui.turn_future = None
+        ui.tui_turn = False
         ui.spin_stop()
         ui.keys.stop()
         if has_handler:
             loop.remove_signal_handler(signal.SIGINT)
     if not quiet:
         await ui.refresh_context(client)
+
+
+async def turn_job(client: ClaudeSDKClient, ui: UI, to_send: str, label: str) -> None:
+    """Giliran user di mode interaktif: jalan sebagai task supaya prompt tetap bisa dipakai (pesan susulan,
+    antrean perintah). Error diteruskan ke loop prompt lewat prompt.abort."""
+    try:
+        await run_turn(client, ui, to_send, label)
+        await goal_after_turn(client, ui)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # WrongAuthSource / mesin Claude mati -> loop utama yang menangani (recover)
+        ui.prompt.abort(e)
+    finally:
+        ui.on_turn_finished()
 
 
 async def goal_check(client: ClaudeSDKClient, ui: UI, why: str) -> None:
@@ -2450,12 +2755,16 @@ async def wait_background(ui: UI) -> None:
 
 
 def confirm_drop_tasks(ui: UI, action: str) -> bool:
-    """Tugas background ikut mati kalau proses Claude ditutup (/exit, /clear, /resume) -> tanya dulu."""
+    """Giliran yang sedang jalan / tugas background ikut mati kalau proses Claude ditutup (/exit, /clear, /resume)
+    -> tanya dulu."""
     n = len(ui.running_bg())
-    if not n:
+    if ui.busy():
+        lead = "Claude masih bekerja" + (f" dan {n} tugas background berjalan" if n else "")
+    elif n:
+        lead = f"Masih ada {n} tugas background berjalan"
+    else:
         return True
-    ans = ask(f"[yellow]Masih ada {n} tugas background berjalan; {action} akan menghentikannya. Lanjut?[/] "
-              "[dim]\\[y/N][/] › ")
+    ans = ask(f"[yellow]{lead}; {action} akan menghentikannya. Lanjut?[/] [dim]\\[y/N][/] › ")
     return ans in ("y", "ya", "yes")
 
 
@@ -2526,33 +2835,42 @@ def show_task_detail(t: BgTask) -> None:
         console.print(f"[dim]  /stop {t.num} untuk menghentikan[/]")
 
 
-async def stop_tasks(client: ClaudeSDKClient, ui: UI, arg: str) -> None:
+def stop_targets(ui: UI, arg: str) -> list[BgTask]:
+    """Tugas background mana yang dimaksud /stop (cetak daftar / kesalahan kalau belum jelas)."""
     running = ui.running_bg()
     if not running:
         console.print("[dim]Tidak ada tugas background yang sedang berjalan.[/]")
-        return
+        return []
     num = arg.lstrip("#")
     if arg == "all":
-        targets = running
-    elif num.isdigit():
+        return running
+    if num.isdigit():
         targets = [t for t in running if t.num == int(num)]
         if not targets:
             console.print(f"[red]Tugas #{num} tidak sedang berjalan.[/] Ketik /tasks untuk daftarnya.")
-            return
-    elif not arg and len(running) == 1:
-        targets = running
-    else:
-        console.print("Tugas background yang berjalan:")
-        for t in running:
-            console.print(ui.task_line(t, max(console.width - 1, 40)))
-        console.print("[dim]Ketik /stop <no> atau /stop all[/]")
-        return
+        return targets
+    if not arg and len(running) == 1:
+        return running
+    console.print("Tugas background yang berjalan:")
+    for t in running:
+        console.print(ui.task_line(t, max(console.width - 1, 40)))
+    console.print("[dim]Ketik /stop <no> atau /stop all[/]")
+    return []
+
+
+async def stop_bg(client: ClaudeSDKClient, ui: UI, targets: list[BgTask]) -> None:
     for t in targets:
-        console.print(f"[yellow]⏹ Menghentikan #{t.num} {clip(oneline(t.desc), 60)}…[/]")
         try:
             await client.stop_task(t.id)
         except Exception as e:
-            console.print(f"[red]✗ Gagal menghentikan #{t.num}: {e}[/]")
+            ui.note(f"[red]✗ Gagal menghentikan #{t.num}: {e}[/]")
+
+
+async def stop_tasks(client: ClaudeSDKClient, ui: UI, arg: str) -> None:
+    targets = stop_targets(ui, arg)
+    for t in targets:
+        console.print(f"[yellow]⏹ Menghentikan #{t.num} {clip(oneline(t.desc), 60)}…[/]")
+    await stop_bg(client, ui, targets)
 
 
 async def show_context(client: ClaudeSDKClient) -> None:
@@ -2853,11 +3171,10 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
 
         prefill = ""
         while True:
-            console.print()
             try:
                 prompt = await ui.prompt.read(prefill)
             except EOFError:
-                if confirm_drop_tasks(ui, "keluar"):
+                if ui.exit_confirmed or confirm_drop_tasks(ui, "keluar"):
                     console.print()
                     return "exit"
                 prefill = ""
@@ -2920,6 +3237,11 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
                 to_send = prompt  # perintah slash harus tetap di awal pesan
             else:
                 to_send = compose(ui, prompt)
+            if ui.prompt.interactive:
+                # Giliran jalan sebagai task: prompt langsung aktif lagi, jadi user bisa mengirim pesan susulan
+                # atau mengantrekan perintah selagi Claude bekerja (seperti Claude Code).
+                ui.turn_task = asyncio.ensure_future(turn_job(client, ui, to_send, prompt))
+                continue
             try:
                 await run_turn(client, ui, to_send, prompt)
                 await goal_after_turn(client, ui)
@@ -2931,6 +3253,12 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
                 return "recover"
             prefill = ui.keys.take_typeahead()
     finally:
+        task = ui.turn_task
+        if task is not None:  # keluar / /clear / /resume / recover saat giliran masih jalan
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        ui.prompt.stop()
         ui.spin_stop()
         ui.keys.stop()
         if reader is not None:

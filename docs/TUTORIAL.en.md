@@ -291,14 +291,21 @@ Total biaya: $0.0379 · Lanjutkan nanti dengan:
 
 ### 5.2 The spinner while Claude works
 
+While Claude works, the prompt stays at the bottom and remains usable (section 7.4). Claude's output is printed
+above it, and the working status is shown in the toolbar, right under the prompt:
+
 ```text
-⠋ Mengulik… Bash (12s · ↓ 1.2k token · esc untuk berhenti)
+› ketik pesan susulan… Enter = kirim (dibaca Claude setelah langkah ini) · Esc = hentikan
+  ⏵⏵ auto-terima edit (shift+tab)  ·  sonnet-5-5 · konteks 12% · $0.0379
+  ⠋ Mengulik… Bash (12s · ↓ 1.2k token · esc untuk berhenti)
 ```
 
-The verb rotates (Berpikir, Mengulik, Meracik, Ngoding, …: thinking, tinkering, brewing, coding, …). The line shows
-the tool that is running, how long the turn has taken, output tokens, and a reminder that **Esc** stops Claude
+The first line is the prompt with a dim hint ("type a follow-up message… Enter = send (Claude reads it after this
+step) · Esc = stop"); the hint disappears as soon as you type. The third line is the spinner: the verb rotates
+(Berpikir, Mengulik, Meracik, Ngoding, …: thinking, tinkering, brewing, coding, …), followed by the tool that is
+running, how long the turn has taken, output tokens, and a reminder that **Esc** stops Claude
 (`esc untuk berhenti`). When a sub-agent is working, its progress (tool count, tokens, latest activity) is shown
-too.
+too. In `-p` mode (no prompt) the same spinner is shown as the last line of the screen.
 
 ### 5.3 The toolbar under the prompt
 
@@ -309,8 +316,17 @@ too.
 From left to right: the permission mode (switch with Shift+Tab; `auto-terima edit` means "auto-accept edits"), the
 model, context usage (`konteks`), and the total cost of the session. `? untuk bantuan` means "? for help". When a
 goal is active or tasks run in the background, you also see items like `🎯 goal · 2m 10s · 3 cek (/goal)` (`cek` =
-checks) and `⧗ 1 background (/tasks)`, plus one progress line per background task. The toolbar refreshes every
-second, even while you type.
+checks) and `⧗ 1 background (/tasks)`, plus one progress line per background task. While Claude works, the
+spinner line (5.2) follows, and so do any messages that are waiting (7.4):
+
+```text
+  ⏳ dibaca Claude setelah langkah ini: tambahkan juga tes untuk pembagian
+  ⏳ setelah giliran selesai: /clear  (↑ di kolom kosong = ambil kembali)
+```
+
+("read by Claude after this step: …" and "after the turn ends: … (↑ in the empty field = take it back)".) The
+toolbar refreshes every second while Claude is idle and several times per second while it works, even while you
+type.
 
 ### 5.4 End-of-turn status
 
@@ -318,6 +334,7 @@ second, even while you type.
 |---|---|
 | `✓ Selesai · 8 langkah · 14.6 detik · ↓ 818 token · biaya: $0.0379 · total sesi: $0.0379` | the turn finished normally (steps, seconds, tokens, cost, session total) |
 | `⏹ Dihentikan oleh user · ketik instruksi baru, atau 'lanjutkan'` | you pressed Esc or Ctrl+C ("stopped by user; type a new instruction, or 'lanjutkan' to continue") |
+| `⏹ Dihentikan oleh user · lanjut ke pesan susulan` | you pressed Esc while a follow-up message was still unread; Claude goes straight on to that message ("stopped by user · continuing with the follow-up message", see 7.4) |
 | `✗ Berhenti: batas budget $5 tercapai.` | the `--budget` limit was reached |
 | `✗ Berhenti (…)` | the turn ended with an error |
 | `🔄 Menyambung ulang (1/3)…` | the Claude engine crashed or the connection dropped; it is reconnecting automatically |
@@ -471,16 +488,51 @@ notes.
 
 ### 7.4 Typing while Claude works
 
-You can start typing your next message while Claude is still working. Nothing you type is lost: when the turn ends,
-the text is already waiting at the prompt, and you just press Enter.
+The chat field is never locked. While Claude works, the prompt stays at the bottom of the screen, and whatever you
+type there is handled the way Claude Code handles it:
+
+**Plain messages are sent right away.** Press Enter and your message is forwarded to Claude immediately; Claude
+reads it as soon as the step (tool call) that is running finishes, and adjusts its work without starting over.
+This is how you correct course ("don't touch the config file", "use pytest, not unittest") or add a request while
+Claude is still busy with the first one. Until Claude has read it, the message is shown in the toolbar:
+
+```text
+  ⏳ dibaca Claude setelah langkah ini: pakai pytest, bukan unittest
+```
+
+("read by Claude after this step: use pytest, not unittest".) Once Claude reads it, the message is printed in the
+transcript as `› pakai pytest, bukan unittest`, at the exact point where Claude received it, and Claude carries on
+with the new instruction. If the turn ends before the message is read (for example because Claude was only writing
+its answer, with no tool running), the message automatically becomes the next turn: the spinner keeps going, and
+you will see two `✓ Selesai` lines, one per turn. Pending `@file` attachments and `!command` output are sent along
+as usual, and a follow-up message is also a `/rewind` point.
+
+**Commands wait for the turn to end.** `/commands` (such as `/clear`, `/goal`, `/compact`), `!command` and
+`# note` are not run in the middle of a turn. They queue, appear in the toolbar as
+`⏳ setelah giliran selesai: /clear` ("after the turn ends: /clear"), and run in order once the turn is over,
+printed as `› /clear` as if you had just typed them. Once something is queued, plain messages you type after it
+queue behind it too, so the order stays the order you typed. Queued something by mistake? Press **↑** in the empty
+field to pull the last queued entry back into the prompt, then edit or delete it.
+
+**A few commands run immediately.** `/tasks`, `/help` (or `?`), `/status`, `/cost`, `/allow`, `/stop` and `/mode`
+only read or change settings, so they run on the spot, their output is printed above the prompt, and Claude keeps
+working.
+
+**Everything else works as usual.** Text you have not sent yet is never lost: permission questions (section 6)
+appear above the prompt and your draft comes back once you have answered, and the same happens while the queue is
+processed. Esc stops the turn; if a follow-up message is still unread, Claude goes straight on to it
+(`⏹ Dihentikan oleh user · lanjut ke pesan susulan`). Ctrl+D while Claude works asks first, because quitting
+would stop the turn.
 
 ## 8. Controlling Claude while it works
 
 | Key or command | Effect |
 |---|---|
+| Enter (while Claude works) | send a follow-up message: Claude reads it after the step that is running finishes; `/commands`, `!command` and `# note` queue until the turn ends (7.4) |
 | Esc or Ctrl+C (while Claude works) | stop the current turn. The context is kept; type a new instruction or `lanjutkan` ("continue"). |
+| ↑ (in the empty field, with a queue) | take the last queued entry back into the prompt |
 | Ctrl+C twice within 2 seconds (at the prompt) | quit |
-| Ctrl+D (at the prompt) | quit |
+| Ctrl+D (at the prompt) | quit; while Claude works it asks first |
 | `/rewind` | restore files to how they were before an earlier prompt |
 
 ### 8.1 `/rewind`
@@ -901,14 +953,14 @@ usage: claude-code-mini [-h] [--model MODEL]
 
 | Key | What it does |
 |---|---|
-| Enter | send the message |
+| Enter | send the message; while Claude works = follow-up message (read after the current step), `/commands` and `!command` queue |
 | `\` + Enter, Alt+Enter | new line |
 | Tab | complete `/commands` and `@paths` |
-| ↑ / ↓ | message history |
+| ↑ / ↓ | message history; ↑ in the empty field with a queue = take the queued entry back |
 | Shift+Tab | switch the permission mode |
 | Esc | stop Claude, or close the completion menu |
 | Ctrl+C | stop Claude; at the prompt press it twice to quit; in a question = cancel |
-| Ctrl+D | quit |
+| Ctrl+D | quit (while Claude works: asks first) |
 
 ### D. Files and folders
 

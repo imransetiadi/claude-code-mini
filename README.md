@@ -68,6 +68,8 @@ menghasilkan 20. Saya ganti menjadi a / b. …
   `.claude/settings.local.json`) · `3` no, and tell Claude what to do instead.
 - **Permission modes**: `default`, `acceptEdits` and `plan` (cycle with Shift+Tab), a plan approval panel, and
   `--yolo` for sandboxes.
+- **Type while Claude works**: the prompt never locks. A message you send mid-turn is read by Claude as soon as
+  the tool call that is running finishes (steering, like Claude Code); commands queue until the turn ends.
 - **Background agents and commands you can watch**: live progress under the prompt, `/tasks` and `/stop`, and
   Claude automatically follows up when they finish.
 - **`/goal`**: Claude keeps working until a condition you define is met (built on Claude Code's own `/goal`).
@@ -134,6 +136,7 @@ Inside a session:
 | `@src/app.py` | Attach a file or folder (Tab completes paths) |
 | `# always use pytest` | Save a note to `CLAUDE.md` (project memory) |
 | Shift+Tab | Cycle the permission mode: default → acceptEdits → plan |
+| Enter while Claude works | Send a follow-up message mid-turn; Claude reads it after the current step. Commands wait until the turn ends |
 | Esc or Ctrl+C | Stop Claude while it is working |
 | `/tasks`, `/stop 2` | Watch or stop background agents and commands |
 | `/goal <condition>` | Keep working until the condition is met (`/goal` shows status, `/goal clear` cancels) |

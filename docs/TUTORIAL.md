@@ -280,13 +280,20 @@ Total biaya: $0.0379 · Lanjutkan nanti dengan:
 
 ### 5.2 Spinner saat Claude bekerja
 
+Selama Claude bekerja, prompt tetap ada di bawah dan bisa dipakai (bagian 7.4). Output Claude dicetak di atasnya,
+dan status kerjanya tampil di toolbar, tepat di bawah prompt:
+
 ```text
-⠋ Mengulik… Bash (12s · ↓ 1.2k token · esc untuk berhenti)
+› ketik pesan susulan… Enter = kirim (dibaca Claude setelah langkah ini) · Esc = hentikan
+  ⏵⏵ auto-terima edit (shift+tab)  ·  sonnet-5-5 · konteks 12% · $0.0379
+  ⠋ Mengulik… Bash (12s · ↓ 1.2k token · esc untuk berhenti)
 ```
 
-Kata kerjanya berganti-ganti (Berpikir, Mengulik, Meracik, Ngoding, …). Isinya adalah tool yang sedang
-berjalan, lama giliran, token keluaran, dan pengingat bahwa **Esc** menghentikan Claude. Kalau sub-agent sedang
-bekerja, progresnya (jumlah tool, token, aktivitas terakhir) ikut ditampilkan.
+Baris pertama adalah prompt dengan petunjuk redup (hilang begitu kamu mengetik). Baris ketiga adalah spinnernya:
+kata kerjanya berganti-ganti (Berpikir, Mengulik, Meracik, Ngoding, …), lalu tool yang sedang berjalan, lama
+giliran, token keluaran, dan pengingat bahwa **Esc** menghentikan Claude. Kalau sub-agent sedang bekerja,
+progresnya (jumlah tool, token, aktivitas terakhir) ikut ditampilkan. Di mode `-p` (tanpa prompt) spinner yang
+sama tampil sebagai baris terakhir di layar.
 
 ### 5.3 Toolbar di bawah prompt
 
@@ -296,8 +303,16 @@ bekerja, progresnya (jumlah tool, token, aktivitas terakhir) ikut ditampilkan.
 
 Dari kiri: mode izin (ganti dengan Shift+Tab), model, pemakaian konteks, dan total biaya sesi. Kalau ada goal
 aktif atau tugas background, muncul tambahan seperti `🎯 goal · 2m 10s · 3 cek (/goal)` dan
-`⧗ 1 background (/tasks)`, plus satu baris progres untuk tiap tugas background. Toolbar diperbarui tiap detik,
-termasuk saat kamu sedang mengetik.
+`⧗ 1 background (/tasks)`, plus satu baris progres untuk tiap tugas background. Saat Claude bekerja, di bawahnya
+ada baris spinner (5.2) dan, kalau ada, pesan yang sedang menunggu (7.4):
+
+```text
+  ⏳ dibaca Claude setelah langkah ini: tambahkan juga tes untuk pembagian
+  ⏳ setelah giliran selesai: /clear  (↑ di kolom kosong = ambil kembali)
+```
+
+Toolbar diperbarui tiap detik saat Claude diam dan beberapa kali per detik saat Claude bekerja, termasuk saat
+kamu sedang mengetik.
 
 ### 5.4 Status akhir giliran
 
@@ -305,6 +320,7 @@ termasuk saat kamu sedang mengetik.
 |---|---|
 | `✓ Selesai · 8 langkah · 14.6 detik · ↓ 818 token · biaya: $0.0379 · total sesi: $0.0379` | giliran selesai normal |
 | `⏹ Dihentikan oleh user · ketik instruksi baru, atau 'lanjutkan'` | kamu menekan Esc atau Ctrl+C |
+| `⏹ Dihentikan oleh user · lanjut ke pesan susulan` | kamu menekan Esc saat ada pesan susulan yang belum dibaca; Claude langsung mengerjakan pesan itu (7.4) |
 | `✗ Berhenti: batas budget $5 tercapai.` | batas `--budget` tercapai |
 | `✗ Berhenti (…)` | giliran berakhir karena error |
 | `🔄 Menyambung ulang (1/3)…` | mesin Claude crash atau koneksi putus, sedang dipulihkan otomatis |
@@ -451,16 +467,51 @@ sesi, dan langsung diberi tahu tentang catatan baru. Baris yang diawali `##` tid
 
 ### 7.4 Mengetik saat Claude bekerja
 
-Kamu boleh mulai mengetik pesan berikutnya selagi Claude bekerja. Ketikanmu tidak hilang: begitu giliran
-selesai, teksnya sudah ada di prompt, tinggal tekan Enter.
+Kolom chat tidak pernah terkunci. Selagi Claude bekerja, prompt tetap ada di bawah layar, dan apa yang kamu
+ketik di situ diperlakukan seperti di Claude Code:
+
+**Pesan biasa langsung dikirim.** Tekan Enter, dan pesanmu diteruskan ke Claude saat itu juga; Claude membacanya
+begitu langkah (tool) yang sedang berjalan selesai, lalu menyesuaikan kerjanya tanpa memulai dari awal. Ini
+cocok untuk mengoreksi arah ("jangan ubah file config", "pakai pytest, bukan unittest") atau menambah permintaan
+selagi Claude masih mengerjakan permintaan pertama. Sampai Claude membacanya, pesan itu tampil di toolbar:
+
+```text
+  ⏳ dibaca Claude setelah langkah ini: pakai pytest, bukan unittest
+```
+
+Begitu Claude membacanya, pesannya dicetak di transkrip sebagai `› pakai pytest, bukan unittest`, tepat di titik
+Claude menerimanya, dan Claude melanjutkan dengan instruksi baru itu. Kalau giliran keburu selesai sebelum
+pesanmu terbaca (misalnya Claude cuma sedang menulis jawaban, tanpa tool), pesan itu otomatis menjadi giliran
+berikutnya: spinner tetap jalan, dan kamu akan melihat dua baris `✓ Selesai`, satu untuk tiap giliran. Lampiran
+`@file` dan output `!command` yang tertunda ikut dikirim seperti biasa, dan pesan susulan juga menjadi titik
+`/rewind`.
+
+**Perintah menunggu giliran selesai.** `/perintah` (misalnya `/clear`, `/goal`, `/compact`), `!command`, dan
+`# catatan` tidak dijalankan di tengah giliran. Mereka antre, tampil di toolbar sebagai
+`⏳ setelah giliran selesai: /clear`, dan dijalankan berurutan begitu giliran berakhir, dicetak sebagai `› /clear`
+seolah-olah baru kamu ketik. Begitu ada yang antre, pesan biasa yang kamu ketik sesudahnya ikut antre di
+belakangnya, supaya urutannya tetap seperti yang kamu ketik. Salah antre? Tekan **↑** di kolom kosong untuk
+mengambil kembali ketikan terakhir dari antrean ke prompt, lalu edit atau hapus.
+
+**Beberapa perintah langsung jalan.** `/tasks`, `/help` (atau `?`), `/status`, `/cost`, `/allow`, `/stop`, dan
+`/mode` cuma membaca atau mengubah pengaturan, jadi dijalankan saat itu juga, outputnya dicetak di atas prompt,
+dan Claude terus bekerja.
+
+**Yang lain tetap seperti biasa.** Ketikan yang belum kamu kirim tidak pernah hilang: pertanyaan izin (bagian 6)
+muncul di atas prompt dan ketikanmu kembali setelah dijawab, begitu juga saat antrean diproses. Esc menghentikan
+giliran; kalau ada pesan susulan yang belum terbaca, Claude langsung mengerjakan pesan itu
+(`⏹ Dihentikan oleh user · lanjut ke pesan susulan`). Ctrl+D saat Claude bekerja bertanya dulu, karena keluar
+akan menghentikan giliran.
 
 ## 8. Mengendalikan Claude saat bekerja
 
 | Tombol atau perintah | Efek |
 |---|---|
+| Enter (saat Claude bekerja) | kirim pesan susulan: dibaca Claude setelah langkah yang sedang jalan selesai; `/perintah`, `!command` dan `# catatan` antre sampai giliran selesai (7.4) |
 | Esc atau Ctrl+C (saat Claude bekerja) | hentikan giliran sekarang. Konteks tetap ada; ketik instruksi baru atau `lanjutkan`. |
+| ↑ (di kolom kosong, saat ada antrean) | ambil kembali ketikan terakhir dari antrean |
 | Ctrl+C dua kali dalam 2 detik (di prompt) | keluar |
-| Ctrl+D (di prompt) | keluar |
+| Ctrl+D (di prompt) | keluar; saat Claude bekerja: tanya dulu |
 | `/rewind` | kembalikan file ke kondisi sebelum prompt tertentu |
 
 ### 8.1 `/rewind`
@@ -872,14 +923,14 @@ usage: claude-code-mini [-h] [--model MODEL]
 
 | Tombol | Fungsi |
 |---|---|
-| Enter | kirim pesan |
+| Enter | kirim pesan; saat Claude bekerja = pesan susulan (dibaca setelah langkah ini), `/perintah` dan `!command` antre |
 | `\` + Enter, Alt+Enter | baris baru |
 | Tab | lengkapi `/perintah` dan `@path` |
-| ↑ / ↓ | riwayat pesan |
+| ↑ / ↓ | riwayat pesan; ↑ di kolom kosong saat ada antrean = ambil kembali antrean |
 | Shift+Tab | ganti mode izin |
 | Esc | hentikan Claude, atau tutup menu pelengkapan |
 | Ctrl+C | hentikan Claude; di prompt tekan 2x untuk keluar; di pertanyaan = batal |
-| Ctrl+D | keluar |
+| Ctrl+D | keluar (saat Claude bekerja: tanya dulu) |
 
 ### D. File dan folder
 
