@@ -675,8 +675,8 @@ On Windows, install `pyte pywinpty` instead, and use `.venv\Scripts\python` and
 
 - API usage is billed to the Anthropic account that owns the key. Use `--budget` to cap a session.
 - `--yolo` lets Claude run any command without asking. Use it only in a disposable sandbox.
-- The screenshots in this README were taken from real sessions with Claude Sonnet; only the project path was
-  shortened.
+- The screenshots in this README come from real sessions with Claude Sonnet; only the project folder's path was
+  replaced with a generic one.
 - Use of Claude is subject to [Anthropic's terms](https://www.anthropic.com/legal/commercial-terms).
 
 ## License
