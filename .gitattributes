@@ -1,0 +1,2 @@
+# Script shell harus tetap LF walaupun di-checkout di Windows (CRLF membuat bash gagal)
+*.sh text eol=lf

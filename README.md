@@ -18,8 +18,8 @@ the tests again. Every part of the screen is explained in [Your first session](#
 ## Contents
 
 - [Features](#features)
-- [Quick start](#quick-start)
-- [Step-by-step setup](#step-by-step-setup):
+- [Install in one command](#install-in-one-command) (macOS, Linux, Windows 11)
+- [Step-by-step setup](#step-by-step-setup), by hand:
   [1 requirements](#step-1-check-the-requirements) ·
   [2 Python and Git](#step-2-install-python-and-git) ·
   [3 API key](#step-3-create-an-anthropic-api-key) ·
@@ -58,26 +58,85 @@ the tests again. Every part of the screen is explained in [Your first session](#
 - **Scriptable**: `-p` one-shot mode with meaningful exit codes for scripts and CI.
 - **Billing safety**: it refuses to run unless it is authenticated with `ANTHROPIC_API_KEY`, so it never draws on a
   Claude Pro/Max subscription. An optional `--budget` caps what a session can spend.
+- **One-command install** on macOS, Linux and Windows 11: the installer sets up Python if needed, asks for your API
+  key, checks it with Anthropic, and saves it.
 
-## Quick start
+## Install in one command
 
-Already have Python 3.10 or newer, git, and an API key in `ANTHROPIC_API_KEY`? Then this is all it takes on macOS
-and Linux:
+The installer does everything for you and asks for your API key at the end, so the only thing to prepare is the
+key itself ([how to create one](#step-3-create-an-anthropic-api-key)).
+
+On **macOS and Linux**, in a terminal:
 
 ```bash
-git clone https://github.com/imransetiadi/claude-code-mini.git
-cd claude-code-mini
-python3 claude-code-mini.py --setup
+curl -fsSL https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.sh | bash
 ```
 
-On Windows 11, run the same in PowerShell with `py claude-code-mini.py --setup` as the last line. Then start it in
-any project folder with `claude-code-mini`, or `claude-code-mini --gui` for the browser version. If anything is
-missing, `--setup` tells you, and the steps below explain everything from the beginning.
+On **Windows 11**, in PowerShell (open **Terminal** from the Start menu):
+
+```powershell
+irm https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.ps1 | iex
+```
+
+When it asks `Tempel API key` ("paste the API key"), paste your key and press Enter. Nothing appears while you
+paste, so the key never shows on screen. Then go to a project folder and start it:
+
+- macOS and Linux: open a new terminal first (or run the `source …` command the installer prints), then run
+  `claude-code-mini`.
+- Windows: in the same window, run `claude-code-mini`.
+
+Use `claude-code-mini --gui` for [the browser version](#the-browser-gui). Your first session is explained step by
+step in [Your first session](#your-first-session).
+
+What the installer does:
+
+1. **Finds Python 3.10 or newer.** If there is none, it asks, then installs one: with Homebrew on macOS, `apt-get`
+   on Ubuntu/Debian (with sudo), winget on Windows, or [uv](https://docs.astral.sh/uv/) into your home folder
+   without sudo when none of those is available. On Windows it also offers Git for Windows, because Claude Code
+   runs its commands through Git Bash.
+2. **Downloads `claude-code-mini.py` and runs `--setup`**, which creates the private virtualenv and the
+   `claude-code-mini` command ([step 4](#step-4-download-and-install) explains what that does). A download that is
+   cut short never replaces a working installation.
+3. **Puts `~/.local/bin` on your PATH.** On macOS and Linux it adds a small block, marked
+   `# >>> claude-code-mini >>>`, to the end of `~/.zshrc`, `~/.bashrc` or `~/.bash_profile`. On Windows it adds
+   the folder to your user PATH.
+4. **Asks for your API key and checks it** with a free request to Anthropic. A key that Anthropic rejects is asked
+   for again, up to three times, and an empty answer skips this step. The key is saved in
+   `~/.config/claude-code-mini/api_key`, readable only by your account and loaded by that same block; on Windows,
+   as the user environment variable `ANTHROPIC_API_KEY`.
+
+To update to the latest version, run the same command again: a saved key is not asked for again. To replace the
+key, run it with `CCMINI_NEW_KEY=1`: `curl -fsSL … | CCMINI_NEW_KEY=1 bash`, or on Windows
+`$env:CCMINI_NEW_KEY = "1"` first. Without a terminal (CI, Docker) the installer asks nothing, installs what it
+needs, and skips the API key.
+
+| Installer line | Meaning |
+|---|---|
+| `Pasang Python 3.13 lewat …? [Y/n]` | Install Python 3.13 with …? Enter means yes. |
+| `Mengunduh claude-code-mini.py (main) …` | Downloading claude-code-mini.py from the `main` branch. |
+| `Tempel API key (tidak tampil di layar; Enter kosong = lewati)` | Paste the API key (not shown on screen; an empty Enter skips it). |
+| `Key diterima Anthropic` / `Key ditolak Anthropic (401)` | Anthropic accepted / rejected the key. |
+| `Itu bukan API key Anthropic (harus diawali sk-ant-)` | That isn't an Anthropic API key (it must start with `sk-ant-`). |
+| `claude-code-mini siap dipakai` | claude-code-mini is ready to use. |
+
+Prefer to read a script before running it? Download it first, read it, then run it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.sh
+```
+
+```bash
+bash install.sh
+```
+
+On Windows: `irm https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.ps1 -OutFile install.ps1`,
+then `powershell -ExecutionPolicy Bypass -File install.ps1`.
 
 ## Step-by-step setup
 
-The whole setup takes about ten minutes on a fresh computer. Each step has instructions for **macOS**,
-**Ubuntu/Debian** and **Windows 11**: follow only the ones for your system.
+Prefer to install by hand, or want to know exactly what the installer does? The whole setup takes about ten minutes
+on a fresh computer. Each step has instructions for **macOS**, **Ubuntu/Debian** and **Windows 11**: follow only the
+ones for your system.
 
 ### Step 1: Check the requirements
 
@@ -568,7 +627,9 @@ remembered per project in `.claude/settings.local.json`.
 
 ## Update and uninstall
 
-To update the script and its libraries, run these in the folder you cloned. On macOS and Linux:
+Installed with the installer? To update, run the [same one-line command](#install-in-one-command) again.
+
+Installed by hand? Run these in the folder you cloned to update the script and its libraries. On macOS and Linux:
 
 ```bash
 git pull && python3 claude-code-mini.py --setup
@@ -587,7 +648,7 @@ To uninstall on macOS and Linux:
 
 ```bash
 rm -f ~/.local/bin/claude-code-mini ~/.claude-code-mini_history
-rm -rf ~/.local/share/claude-code-mini
+rm -rf ~/.local/share/claude-code-mini ~/.config/claude-code-mini
 ```
 
 On Windows:
@@ -597,16 +658,24 @@ Remove-Item "$HOME\.local\bin\claude-code-mini.exe*", "$HOME\.claude-code-mini_h
 Remove-Item -Recurse -Force "$HOME\.local\share\claude-code-mini"
 ```
 
-Then delete the cloned folder, and the `ANTHROPIC_API_KEY` and PATH lines in `~/.zshrc` or `~/.bashrc` if you no
-longer need them (on Windows: `[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "User")`).
-Conversations are stored in `~/.claude/projects/`, shared with the official Claude Code; delete them by hand if you
-want to.
+Then remove what still points to it:
+
+- macOS and Linux: the block from `# >>> claude-code-mini >>>` to `# <<< claude-code-mini <<<` in `~/.zshrc`,
+  `~/.bashrc` or `~/.bash_profile` (after a manual install: the `ANTHROPIC_API_KEY` and PATH lines you added).
+- Windows: the API key, with `[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "User")`.
+
+Delete the cloned folder too, if you made one. Conversations are stored in `~/.claude/projects/`, shared with the
+official Claude Code; delete them by hand if you want to.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `claude-code-mini: command not found`, or on Windows `The term 'claude-code-mini' is not recognized…` | `~/.local/bin` is not on your PATH ([step 5](#step-5-put-the-command-on-your-path)), or the terminal was opened before. Open a new terminal. |
+| `claude-code-mini: command not found`, or on Windows `The term 'claude-code-mini' is not recognized…` | The terminal was opened before the installation: open a new one, or run `source ~/.zshrc` (or `~/.bashrc`). After a manual install, `~/.local/bin` may not be on your PATH yet ([step 5](#step-5-put-the-command-on-your-path)). |
+| Installer: `Key ditolak Anthropic (401)` ("Anthropic rejected the key") | The key is mistyped, was deleted, or belongs to another workspace. Create a new one ([step 3](#step-3-create-an-anthropic-api-key)) and paste it again. |
+| Installer: `Key belum bisa dicek` ("the key couldn't be checked yet") | The installer couldn't reach `api.anthropic.com` (no internet, a proxy or a firewall). The key is saved anyway; check your connection before starting. |
+| `Jalankan installer ini dengan bash` ("run this installer with bash") | The script was piped into `sh`. Use `… \| bash`, exactly as shown. |
+| Windows: `running scripts is disabled on this system` | That happens when you run the downloaded `install.ps1` file directly. Use the `irm … \| iex` line, or `powershell -ExecutionPolicy Bypass -File install.ps1`. |
 | `ANTHROPIC_API_KEY belum di-set.` ("not set") | The key is not set in this terminal. Repeat [step 6](#step-6-save-your-api-key), or open a new terminal. |
 | An error about an invalid API key | The key is mistyped or was deleted. Create a new one ([step 3](#step-3-create-an-anthropic-api-key)), delete the old `export` line, and save it again. |
 | An error saying your credit balance is too low | Add credit in the Claude Console's billing settings. |
@@ -658,18 +727,26 @@ need no API key and cost nothing. They cover `--setup`, `-p` mode and its exit c
 pseudo-terminal (permission prompts, typing while Claude works, Esc, Shift+Tab, `!command` and `@file`), and the
 GUI over HTTP. On Windows they also check a run without Git Bash.
 
+The installers are tested the same way. `install.sh` and `install.ps1` run in a pseudo-terminal, where the test
+types text that isn't a key, a key the fake API rejects, and then a valid one. The test then runs the installed
+command with only what the installer saved, and runs the README one-liner (`curl … | bash` or `irm … | iex`) as an
+update. `install.sh` is also run on fresh Ubuntu 22.04 and 26.04 containers that have no Python: as root it installs
+Python with `apt-get`, and as a user without sudo with uv.
+
 To run them yourself, after `--setup`:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install pyte ptyprocess
 .venv/bin/python tests/e2e.py
 .venv/bin/python tests/gui.py
+.venv/bin/python tests/install.py
 ~/.local/share/claude-code-mini/venv/bin/python tests/unit.py
 ```
 
 On Windows, install `pyte pywinpty` instead, and use `.venv\Scripts\python` and
 `%USERPROFILE%\.local\share\claude-code-mini\venv\Scripts\python.exe`. The tests give the app its own `HOME` inside
-`test-out/`, so your prompt history and conversations are left alone.
+`test-out/`, so your prompt history and conversations are left alone. On Windows, `tests/install.py` only runs in CI
+(or with `--force`), because the installer writes to your user environment variables.
 
 ## Notes
 

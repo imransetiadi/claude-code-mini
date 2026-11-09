@@ -469,6 +469,8 @@ def setup() -> None:
     _say("✓", f"Perintah claude-code-mini dibuat ({LAUNCHER} → {dst})", "green")
     if WINDOWS:
         windows_engine_notes()
+    if os.environ.get("CCMINI_INSTALLER"):  # install.sh / install.ps1 mengurus PATH, API key dan pesan penutupnya
+        return
     paths = os.environ.get("PATH", "").split(os.pathsep)
     if not any(same_dir(p, BIN_DIR) for p in paths):
         if WINDOWS and any(same_dir(p, BIN_DIR) for p in win_user_env("Path").split(";")):

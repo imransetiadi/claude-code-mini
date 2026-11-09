@@ -63,6 +63,12 @@ jobs:
         env:
           CCMINI_OUT: ${{ github.workspace }}/test-out/gui
 
+      - name: Installer (install.sh / install.ps1, interactive + README one-liner)
+        if: ${{ !cancelled() }}
+        run: python tests/install.py --download
+        env:
+          CCMINI_OUT: ${{ github.workspace }}/test-out/install
+
       - name: Windows without Git Bash (Claude uses PowerShell)
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
@@ -78,3 +84,21 @@ jobs:
         with:
           name: test-out-${{ matrix.os }}-py${{ matrix.python }}
           path: test-out
+
+  fresh-ubuntu:
+    # install.sh di Ubuntu yang belum punya Python: root -> apt-get, user tanpa sudo -> uv
+    name: install.sh · ${{ matrix.image }} · ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: "ubuntu:22.04"  # Python 3.10, versi minimum
+            mode: root
+          - image: "ubuntu:26.04"
+            mode: user
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install in a fresh container, then run the installed command
+        run: docker run --rm -v "$PWD:/src:ro" "${{ matrix.image }}" bash /src/tests/install_container.sh "${{ matrix.mode }}"

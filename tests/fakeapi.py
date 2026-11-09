@@ -159,6 +159,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         log(self.logfile, {"method": "GET", "path": self.path})
+        if self.path.split("?")[0].endswith("/v1/models"):  # cek API key oleh installer: hanya key tes yang diterima
+            if (self.headers.get("x-api-key") or "").startswith("sk-ant-fake"):
+                return self._json(200, {"data": [{"type": "model", "id": "claude-haiku-5-5"}], "has_more": False})
+            return self._json(401, {"type": "error", "error": {"type": "authentication_error",
+                                                              "message": "invalid x-api-key"}})
         self._json(404, {"type": "error", "error": {"type": "not_found_error", "message": "fake"}})
 
     def do_HEAD(self):

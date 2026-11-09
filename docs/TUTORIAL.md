@@ -125,6 +125,47 @@ git --version
 
 ## 3. Instalasi
 
+### 3.0 Cara tercepat: installer sekali jalan
+
+Installer menyiapkan semuanya, lalu meminta API key di akhir. Siapkan dulu API key-nya ([bagian 2.4](#24-membuat-api-key)),
+lalu jalankan satu baris ini. Di macOS dan Linux (terminal):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.sh | bash
+```
+
+Di Windows 11 (PowerShell, di Windows Terminal):
+
+```powershell
+irm https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.ps1 | iex
+```
+
+Saat muncul `Tempel API key`, tempel key-nya lalu tekan Enter. Key tidak tampil di layar. Installer mengecek key ke
+Anthropic lewat permintaan gratis; key yang ditolak (`Key ditolak Anthropic (401)`) diminta lagi, maksimal tiga kali,
+dan Enter kosong melewati langkah ini. Setelah muncul `claude-code-mini siap dipakai`, buka terminal baru (di Windows
+cukup jendela yang sama), masuk ke folder proyek, lalu jalankan `claude-code-mini`. Lanjut ke
+[bagian 4](#4-sesi-pertama).
+
+Yang dikerjakan installer:
+
+1. Mencari Python 3.10+. Kalau belum ada, setelah bertanya, memasangnya lewat Homebrew (macOS), `apt-get`
+   (Ubuntu/Debian, pakai sudo), winget (Windows), atau [uv](https://docs.astral.sh/uv/) ke folder home tanpa sudo.
+   Di Windows, installer juga menawarkan Git for Windows (lihat [bagian 2.3](#23-windows-11)).
+2. Mengunduh `claude-code-mini.py` lalu menjalankan `--setup`, sama seperti [bagian 3.1](#31-ambil-kode-dan-pasang).
+   Unduhan yang terputus tidak akan menimpa instalasi yang sudah jalan.
+3. Menaruh `~/.local/bin` di PATH: lewat blok kecil bertanda `# >>> claude-code-mini >>>` di akhir `~/.zshrc`,
+   `~/.bashrc` atau `~/.bash_profile`; di Windows lewat PATH user.
+4. Menyimpan API key di `~/.config/claude-code-mini/api_key`, yang hanya bisa dibaca akunmu dan dimuat oleh blok tadi.
+   Di Windows, key disimpan sebagai environment variable user `ANTHROPIC_API_KEY`.
+
+Update ke versi terbaru: jalankan perintah yang sama lagi; key yang sudah tersimpan tidak ditanya lagi. Untuk
+mengganti key: `curl -fsSL … | CCMINI_NEW_KEY=1 bash` (di Windows, jalankan `$env:CCMINI_NEW_KEY = "1"` dulu).
+Tanpa terminal (CI, Docker), installer tidak bertanya apa pun dan melewati API key.
+
+Ingin membaca script-nya dulu? Unduh dengan `curl -fsSLO https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.sh`,
+baca, lalu jalankan `bash install.sh`. Cara manual di bawah tetap bisa dipakai, sekaligus menjelaskan apa yang
+dikerjakan installer.
+
 > Di Windows 11, lewati 3.1–3.4 dan ikuti [bagian 3.5](#35-windows-11).
 
 ### 3.1 Ambil kode dan pasang
@@ -974,7 +1015,10 @@ hanya mendengarkan di `127.0.0.1` server, jadi tidak terbuka ke internet; aksesn
 
 ## 17. Update dan uninstall
 
-Update ke versi terbaru:
+Kalau memasang lewat installer ([bagian 3.0](#30-cara-tercepat-installer-sekali-jalan)), update cukup dengan
+menjalankan perintah installer yang sama lagi.
+
+Kalau memasang manual, update ke versi terbaru:
 
 ```bash
 cd ~/claude-code-mini     # folder hasil git clone
@@ -992,12 +1036,13 @@ Uninstall:
 
 ```bash
 rm -f ~/.local/bin/claude-code-mini ~/.claude-code-mini_history
-rm -rf ~/.local/share/claude-code-mini
+rm -rf ~/.local/share/claude-code-mini ~/.config/claude-code-mini
 ```
 
-Hapus juga folder clone dan baris `export ANTHROPIC_API_KEY=…`/PATH di `~/.zshrc` atau `~/.bashrc` kalau tidak
-dipakai lagi. Riwayat percakapan ada di `~/.claude/projects/` (dipakai bersama Claude Code resmi); hapus manual
-kalau perlu.
+Hapus juga blok `# >>> claude-code-mini >>>` sampai `# <<< claude-code-mini <<<` dari installer (atau baris
+`export ANTHROPIC_API_KEY=…`/PATH yang kamu tambahkan sendiri) di `~/.zshrc`, `~/.bashrc` atau `~/.bash_profile`,
+dan folder clone kalau ada. Riwayat percakapan ada di `~/.claude/projects/` (dipakai bersama Claude Code resmi);
+hapus manual kalau perlu.
 
 Di Windows (PowerShell), update:
 
@@ -1025,6 +1070,9 @@ Remove-Item -Recurse -Force "$HOME\.local\share\claude-code-mini"
 | `✗ Gagal membuat virtualenv`, atau error tentang `ensurepip` | Ubuntu/Debian: `sudo apt install -y python3-venv`, lalu ulangi `--setup`. |
 | `✗ pip install gagal` | Cek koneksi internet/proxy ke PyPI, lalu ulangi `--setup`. |
 | `claude-code-mini: command not found` | `~/.local/bin` belum ada di PATH (bagian 3.2). Atau buka terminal baru. |
+| Installer: `Key ditolak Anthropic (401)` | Key salah ketik, sudah dihapus, atau dari workspace lain. Buat key baru (bagian 2.4) lalu tempel lagi. |
+| Installer: `Key belum bisa dicek` | Installer tidak bisa menghubungi `api.anthropic.com`. Key tetap disimpan; cek internet, proxy, atau firewall. |
+| Windows: `running scripts is disabled on this system` | File `install.ps1` yang diunduh dijalankan langsung. Pakai baris `irm … \| iex`, atau `powershell -ExecutionPolicy Bypass -File install.ps1`. |
 | `Binary Claude Code tidak ditemukan.` | Instalasi library tidak lengkap. Jalankan `python3 claude-code-mini.py --setup`. |
 | `✗ Mesin Claude Code gagal start` | Cek internet/proxy ke `api.anthropic.com` dan keabsahan API key, lalu update dengan `--setup`. Detail error dari mesin Claude tampil di atas pesan ini. |
 | `Output tool terlalu besar untuk buffer (64 MB)` | Jalankan dengan `--buffer-mb 128`, atau minta Claude membaca file per bagian. |
