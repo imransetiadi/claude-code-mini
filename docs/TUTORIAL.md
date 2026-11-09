@@ -421,7 +421,8 @@ bawaan. Terminalnya tetap terbuka dan menampilkan alamatnya:
 Isinya sama dengan versi terminal, hanya tampilannya berbeda:
 
 - **Percakapan.** Pesanmu tampil sebagai gelembung, jawaban Claude dirender sebagai markdown (judul, daftar, tabel,
-  blok kode). Pikiran Claude (`✻ Berpikir…`) bisa dibuka-tutup.
+  blok kode) dan mengalir sedikit demi sedikit selagi Claude menulisnya. Pikiran Claude (`✻ Berpikir…`) bisa
+  dibuka-tutup.
 - **Kartu tool.** Setiap tool tampil sebagai kartu: `Bash` dengan command-nya, `Update` dengan diff berwarna dan
   nomor baris, `Read`, `Write`, todo list, sub-agent. Hasilnya muncul di bawah kartunya; output yang panjang bisa
   dibuka lewat "Lihat output lengkap".
@@ -439,8 +440,20 @@ Isinya sama dengan versi terminal, hanya tampilannya berbeda:
   ditandai. Klik salah satunya untuk melanjutkan, **+ Baru** untuk percakapan baru. Setiap pindah, layar jadi
   lembar baru: percakapan baru mulai kosong, dan percakapan yang dilanjutkan menampilkan pesan, jawaban, dan kartu
   tool miliknya sendiri dari awal, di bawah judulnya. Reload halaman hanya menampilkan percakapan yang sedang dibuka.
-  Untuk menyembunyikan sidebar: tombol panel di kiri atas, tombol ‹ di sebelah **+ Baru**, atau Ctrl+B (⌘B di Mac);
+  Kotak `Cari percakapan…` di atas daftar menyaringnya menurut judul. Arahkan kursor ke salah satu percakapan untuk
+  memunculkan ✎ (ganti nama; Enter simpan, Esc batal) dan 🗑 (hapus permanen, setelah konfirmasi; percakapan yang
+  sedang dibuka tidak bisa dihapus). Untuk menyembunyikan sidebar: tombol panel di kiri atas, tombol ‹ di sebelah **+ Baru**, atau Ctrl+B (⌘B di Mac);
   pilihannya diingat. Di jendela sempit, sidebar menggeser masuk menutupi halaman.
+- **Lampiran.** Klik 📎 di kiri kolom pesan, seret file ke halaman, atau tempel gambar/screenshot dengan Ctrl+V.
+  Tiap file tampil sebagai chip di atas kolom pesan (× untuk membatalkan), gambar dengan thumbnail-nya. Saat dikirim,
+  file disimpan di `~/.local/share/claude-code-mini/uploads/` (maks. 25 MB per file, dihapus otomatis setelah 14
+  hari) dan Claude membacanya dengan tool `Read`, yang bisa membaca gambar, PDF, dan teks. Gelembung pesanmu
+  mencantumkan lampirannya. (Untuk file yang sudah ada di folder proyek, `@path` tetap lebih praktis, bagian 7.2.)
+- **Notifikasi.** Tombol 🔔 di bar bawah menyalakan bunyi lembut plus notifikasi browser (`✓ Claude selesai`,
+  `🔐 Claude minta izin`) saat Claude selesai atau minta izin sementara kamu sedang di tab atau jendela lain.
+  Browser meminta izin notifikasi saat pertama kali kamu mengirim pesan; klik 🔔 lagi untuk mematikannya.
+- **Versi baru.** Kalau ada versi baru di GitHub, strip di atas halaman memberi tahu, dengan tombol untuk menyalin
+  perintah `claude-code-mini --update` (bagian 17).
 - **Bawah.** Pilihan mode izin dan model, pemakaian konteks, biaya, goal, dan tugas background.
 - **Atas.** Tombol **Baru** (`/clear`), **Riwayat** (tampilkan/sembunyikan sidebar riwayat), **Rewind**,
   **Bantuan**, dan **Keluar**.
@@ -453,6 +466,7 @@ Isinya sama dengan versi terminal, hanya tampilannya berbeda:
 | Tab | pilih saran `/perintah` atau `@path` yang muncul saat mengetik |
 | ↑ (kolom kosong) | pesan yang terakhir dikirim |
 | Ctrl+B (⌘B di Mac) | tampilkan / sembunyikan sidebar riwayat |
+| Ctrl+V (ada gambar/file di clipboard) | lampirkan |
 | 1 / 2 / 3 | jawab pertanyaan izin yang sedang tampil |
 
 Semua perintah dan shortcut lain (`!command`, `@file`, `# catatan`, `/goal`, `/tasks`, `/model`, …) diketik di
@@ -1052,10 +1066,24 @@ hanya mendengarkan di `127.0.0.1` server, jadi tidak terbuka ke internet; aksesn
 
 ## 17. Update dan uninstall
 
-Kalau memasang lewat installer ([bagian 3.0](#30-cara-tercepat-installer-sekali-jalan)), update cukup dengan
-menjalankan perintah installer yang sama lagi.
+Update ke versi terbaru cukup dengan satu perintah:
 
-Kalau memasang manual, update ke versi terbaru:
+```bash
+claude-code-mini --update
+```
+
+Perintah ini mengunduh `claude-code-mini.py` terbaru dari GitHub ke folder instalasi, lalu memperbarui library
+(termasuk mesin Claude Code) seperti `--setup`. Di Windows, tutup dulu jendela claude-code-mini yang lain.
+
+Tidak perlu rajin mengecek sendiri: kira-kira dua kali sehari claude-code-mini melihat GitHub di background. Kalau
+ada versi baru, saat mulai muncul `⬆ Versi baru claude-code-mini tersedia. Update dengan:  claude-code-mini --update`,
+dan di GUI ada strip di atas halaman dengan tombol untuk menyalin perintahnya. Matikan pengecekan ini dengan
+`CCMINI_NO_UPDATE_CHECK=1`.
+
+Menjalankan lagi perintah installer ([bagian 3.0](#30-cara-tercepat-installer-sekali-jalan)) juga bisa.
+
+Kalau memasang manual dari hasil `git clone`, `--update` memperbarui perintah yang terpasang, tapi tidak folder
+clone-mu. Supaya keduanya sama, update dari folder clone:
 
 ```bash
 cd ~/claude-code-mini     # folder hasil git clone
@@ -1160,8 +1188,8 @@ usage: claude-code-mini [-h] [--model MODEL]
                         [--mode {default,acceptEdits,plan,auto,bypassPermissions,dontAsk}]
                         [--effort {low,medium,high,xhigh,max}]
                         [--budget BUDGET] [--yolo] [-c] [-r [SESSION_ID]]
-                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup] [--gui]
-                        [--port PORT] [--no-browser]
+                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup]
+                        [--update] [--gui] [--port PORT] [--no-browser]
                         [repo]
 ```
 
@@ -1178,6 +1206,7 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `-p`, `--print PROMPT` | sekali jalan lalu keluar (exit code di bagian 13) |
 | `--buffer-mb MB` | batas ukuran output tool (bawaan: 64) |
 | `--setup` | pasang/update library dan perintah `claude-code-mini` |
+| `--update` | unduh versi terbaru dari GitHub, lalu perbarui library (bagian 17) |
 | `--gui` | buka tampilan GUI di browser (bagian 4.1) |
 | `--port PORT` | port GUI (bawaan: 8765; kalau terpakai, dipilih port berikutnya) |
 | `--no-browser` | GUI: jangan buka browser otomatis (mis. di server, bagian 16.1) |
@@ -1222,6 +1251,8 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `~/.local/bin/claude-code-mini` | perintah peluncur |
 | `~/.local/share/claude-code-mini/claude-code-mini.py` | salinan script yang dijalankan |
 | `~/.local/share/claude-code-mini/venv/` | library: claude-agent-sdk (dengan mesin Claude Code), rich, prompt_toolkit |
+| `~/.local/share/claude-code-mini/uploads/` | lampiran dari GUI (dihapus otomatis setelah 14 hari) |
+| `~/.local/share/claude-code-mini/update-check.json` | hasil pengecekan versi terakhir |
 | `~/.claude-code-mini_history` | riwayat ketikan |
 | `~/.claude/projects/` | percakapan (format Claude Code) |
 | `<proyek>/CLAUDE.md`, `<proyek>/.claude/` | pengaturan proyek (bagian 15) |
@@ -1235,6 +1266,7 @@ Kalau `XDG_DATA_HOME` di-set, folder data pindah ke `$XDG_DATA_HOME/claude-code-
 |---|---|
 | `ANTHROPIC_API_KEY` | API key (wajib) |
 | `CCMINI_NO_CAFFEINATE=1` | macOS/Windows: jangan cegah komputer tidur |
+| `CCMINI_NO_UPDATE_CHECK=1` | jangan cek versi baru di GitHub (bagian 17) |
 | `CLAUDE_CODE_GIT_BASH_PATH` | Windows: lokasi `bash.exe` kalau Git for Windows terpasang di tempat yang tidak biasa |
 | `IS_SANDBOX=1` | izinkan mode YOLO sebagai root (hanya untuk container/VM sekali pakai) |
 | `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` | batas penolakan beruntun `/goal` (bawaan Claude Code: 8) |

@@ -4,6 +4,7 @@ Code asli dan API tiruan (fakeapi.py). Tanpa browser dan tanpa API key; tampilan
     python tests/gui.py      (jalankan setelah `claude-code-mini.py --setup`; butuh pyte + ptyprocess/pywinpty)
 Env sama dengan tests/e2e.py (CCMINI_APP, CCMINI_OUT).
 """
+import base64
 import contextlib
 import http.client
 import json
@@ -286,6 +287,44 @@ def test_flow(g):
           and any(e["type"] == "assistant" and 'data-copy="' in e["html"] and "gui-salin" in e["html"] for e in shown)
           and not any(e["type"] == "assistant" and "jawaban-kedua" in e["html"] for e in shown),
           json.dumps(after[i] if i is not None else after[-3:])[:300])
+    # streaming: potongan jawaban (event draft) datang sebelum jawaban final dan tidak ikut diputar ulang
+    m = g.mark()
+    long = "Jawaban ini sengaja panjang supaya terlihat mengalir sedikit demi sedikit. " * 8
+    g.api("send", {"text": f"[[say:{long}]]"})
+    g.wait(lambda e: e["type"] == "assistant" and "mengalir" in e["html"], 60, m)
+    g.turn_done(m)
+    evs = g.events[m:]
+    final = next(k for k, e in enumerate(evs) if e["type"] == "assistant")
+    drafts = [e for e in evs[:final] if e["type"] == "draft"]
+    check("G16 jawaban mengalir: beberapa draf sebelum jawaban final, tidak masuk replay",
+          len(drafts) >= 2 and len(drafts[-1]["html"]) > len(drafts[0]["html"])
+          and not any(e["type"] == "draft" for e in g.replay()), f"draf={len(drafts)}")
+
+    # sidebar: ganti nama dan hapus (yang sedang dibuka tidak boleh dihapus)
+    r = g.api("sessions", {})
+    cur = r.get("current")
+    other = next((it["id"] for it in r.get("items", []) if it["id"] != cur), None)
+    ren = g.api("rename", {"id": other, "title": "Nama baru dari tes"})
+    titles = {it["id"]: it["title"] for it in g.api("sessions", {}).get("items", [])}
+    bad = g.api("delete", {"id": cur})
+    gone = g.api("delete", {"id": other})
+    ids = [it["id"] for it in g.api("sessions", {}).get("items", [])]
+    check("G17 ganti nama + hapus percakapan dari sidebar (yang aktif ditolak)",
+          ren.get("ok") and titles.get(other) == "Nama baru dari tes" and not bad.get("ok") and gone.get("ok")
+          and other not in ids and cur in ids, json.dumps([ren, bad, gone])[:300])
+
+    # lampiran: diunggah dari browser, lalu dibaca Claude dengan Read tanpa pertanyaan izin
+    up = g.api("upload", {"name": "catatan uji.txt", "data": base64.b64encode(b"isi-lampiran-uji").decode()})
+    m = g.mark()
+    g.api("send", {"text": f"[[read:{up.get('path')}]]"})
+    g.wait(is_type("assistant", html="DIBACA"), 90, m)
+    g.turn_done(m)
+    evs = g.events[m:]
+    check("G18 lampiran: tersimpan di folder uploads, dibaca Claude tanpa pertanyaan izin",
+          up.get("ok") and Path(up["path"]).read_bytes() == b"isi-lampiran-uji" and "uploads" in up["path"]
+          and any(e["type"] == "tool" and e["name"] == "Read" for e in evs) and not any(e["type"] == "ask" for e in evs),
+          json.dumps(up)[:200])
+
     replay = g.replay()
     check("G15b reload halaman sesudah pindah: hanya percakapan yang sedang dibuka yang diputar ulang",
           [e["type"] for e in replay[:2]] == ["hello", "reset"] and not any("jawaban-kedua" in e.get("html", "")

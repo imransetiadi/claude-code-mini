@@ -91,6 +91,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import warnings
@@ -133,6 +134,7 @@ WINDOWS = os.name == "nt"
 #  mengalihkan tulisan ke AppData ke folder pribadinya, sehingga venv-nya tidak ditemukan dari luar.)
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "claude-code-mini"
 VENV_DIR = DATA_DIR / "venv"
+UPLOAD_DIR = DATA_DIR / "uploads"  # lampiran dari GUI (drag & drop / paste), dibersihkan setelah 14 hari
 VENV_PY = VENV_DIR / ("Scripts/python.exe" if WINDOWS else "bin/python")
 BIN_DIR = Path.home() / ".local" / "bin"
 # Windows: launcher .exe (dibuat pip), bukan .cmd: Ctrl+C di file .cmd memunculkan "Terminate batch job (Y/N)?".
@@ -501,6 +503,55 @@ def setup() -> None:
         print(f"\nCoba: claude-code-mini {example}  ·  library sudah diperbarui")
 
 
+GITHUB_REPO = "imransetiadi/claude-code-mini"
+UPDATE_FILE = DATA_DIR / "update-check.json"
+
+
+def blob_sha(data: bytes) -> str:
+    """SHA blob git dari isi file (akhir baris CRLF dianggap LF): sama dengan "sha" file itu di GitHub."""
+    import hashlib
+
+    data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def update_self() -> None:
+    """--update: unduh claude-code-mini.py terbaru dari GitHub ke folder instalasi, lalu jalankan --setup dengan
+    versi itu (library ikut diperbarui). Hanya memakai library bawaan Python, seperti --setup."""
+    import ast
+    import json
+    import urllib.request
+
+    setup_windows_console()
+    repo = os.environ.get("CCMINI_REPO") or GITHUB_REPO
+    ref = os.environ.get("CCMINI_REF") or "main"
+    url = f"https://raw.githubusercontent.com/{repo}/{ref}/claude-code-mini.py"
+    print(f"→ Mengunduh claude-code-mini.py terbaru ({ref}) …", flush=True)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "claude-code-mini"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read()
+        ast.parse(data.decode("utf-8"))
+        if b"def bootstrap" not in data:
+            raise ValueError("bukan claude-code-mini.py")
+    except Exception as e:
+        _say("✗", f"Gagal mengambil versi terbaru dari {url}: {e}", "red")
+        sys.exit(1)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    dst = DATA_DIR / "claude-code-mini.py"
+    new_sha = blob_sha(data)
+    if dst.exists() and blob_sha(dst.read_bytes()) == new_sha:
+        _say("✓", "Sudah versi terbaru. Library tetap diperiksa dan diperbarui.", "green")
+    else:
+        tmp = DATA_DIR / ".claude-code-mini.py.new"
+        tmp.write_bytes(data)
+        os.replace(tmp, dst)
+        _say("✓", "claude-code-mini diperbarui ke versi terbaru.", "green")
+    with contextlib.suppress(OSError):
+        UPDATE_FILE.write_text(json.dumps({"checked": time.time(), "remote": new_sha}), encoding="utf-8")
+    sys.exit(subprocess.call([sys.executable, str(dst), "--setup"]))
+
+
 def bootstrap() -> None:
     setup_windows_console()
     if sys.version_info < (3, 10):
@@ -508,6 +559,8 @@ def bootstrap() -> None:
     if "--setup" in sys.argv[1:]:  # dikerjakan sebelum library berat di-import (lihat setup())
         setup()
         sys.exit(0)
+    if "--update" in sys.argv[1:]:
+        update_self()
     if _deps_ok():
         return
     reqs = " ".join(quote_arg(r) for r in REQUIREMENTS)
@@ -590,6 +643,14 @@ try:
     from claude_agent_sdk import get_session_messages, list_sessions
 except ImportError:
     get_session_messages = list_sessions = None  # type: ignore[assignment]
+try:
+    from claude_agent_sdk import delete_session, rename_session
+except ImportError:
+    delete_session = rename_session = None  # type: ignore[assignment]
+try:  # potongan jawaban yang sedang ditulis (include_partial_messages), untuk streaming di GUI
+    from claude_agent_sdk.types import StreamEvent
+except ImportError:
+    StreamEvent = ()  # type: ignore[assignment,misc]
 try:
     from claude_agent_sdk import ConversationResetMessage, RateLimitEvent
 except ImportError:  # isinstance(x, ()) selalu False
@@ -765,6 +826,61 @@ def clip(s: str, width: int = 200) -> str:
 
 def oneline(s: str) -> str:
     return " ".join(s.split())
+
+
+# ---------------------------------------------------------------- versi baru di GitHub
+UPDATE_EVERY = 12 * 3600
+
+
+def update_check_enabled() -> bool:
+    """Hanya untuk perintah claude-code-mini yang terpasang, dan tidak di CI / tes / kalau dimatikan."""
+    return bool(os.environ.get("CCMINI_LAUNCHER")) and not (
+        os.environ.get("CCMINI_NO_UPDATE_CHECK") or os.environ.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"))
+
+
+def update_notice(remote: str | None = None) -> str | None:
+    """Pesan "versi baru tersedia" kalau versi di GitHub (cek terakhir, atau `remote`) beda dengan yang terpasang."""
+    if not update_check_enabled():
+        return None
+    if remote is None:
+        try:
+            remote = json.loads(UPDATE_FILE.read_text(encoding="utf-8")).get("remote")
+        except (OSError, ValueError):
+            return None
+    try:
+        local = blob_sha(Path(__file__).read_bytes())
+    except OSError:
+        return None
+    if remote and remote != local:
+        return "Versi baru claude-code-mini tersedia. Update dengan:  claude-code-mini --update"
+    return None
+
+
+def check_for_update(force: bool = False) -> str | None:
+    """Tanya GitHub (paling sering sekali per 12 jam) sha claude-code-mini.py di main; disimpan di update-check.json.
+    Jalan di thread terpisah; gagal tersambung = diam saja."""
+    if not update_check_enabled():
+        return None
+    try:
+        cache = json.loads(UPDATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    if not force and time.time() - float(cache.get("checked") or 0) < UPDATE_EVERY:
+        return cache.get("remote")
+    import urllib.request
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/claude-code-mini.py?ref=main"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "claude-code-mini",
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            remote = json.loads(r.read().decode("utf-8")).get("sha")
+    except Exception:
+        return None
+    with contextlib.suppress(OSError):
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        UPDATE_FILE.write_text(json.dumps({"checked": time.time(), "remote": remote}), encoding="utf-8")
+    return remote
 
 
 # ---------------------------------------------------------------- menyalin jawaban Claude (/copy, tombol Salin di GUI)
@@ -2169,6 +2285,9 @@ class UI:
             return "", None  # rencananya ditampilkan di panel persetujuan
         return clip(json.dumps(inp, ensure_ascii=False), 400 if full else 160), None
 
+    def on_stream(self, msg: Any) -> None:
+        """Potongan jawaban yang sedang ditulis Claude. Terminal: tidak dipakai (jawaban dicetak utuh)."""
+
     def new_view(self, kind: str, session_id: str | None) -> None:
         """Percakapan berganti ("clear" = baru, "resume" = lanjutkan). Terminal: cuplikan riwayat di bawah yang lama.
         GUI (WebUI): layar dibersihkan dan isi percakapan yang dilanjutkan ditampilkan lengkap."""
@@ -2417,6 +2536,9 @@ class UI:
 
     # ---------- pesan dari SDK ----------
     def render(self, msg: Any) -> None:
+        if isinstance(msg, StreamEvent):
+            self.on_stream(msg)
+            return
         if isinstance(msg, RateLimitEvent):
             info = msg.rate_limit_info
             status = getattr(info, "status", "")
@@ -3754,6 +3876,10 @@ def build_options(ui: UI, resume_id: str | None = None, continue_last: bool = Fa
         extra_args={"replay-user-messages": None},
         stderr=on_cli_stderr,
     )
+    if getattr(ui, "gui", False):
+        kwargs["include_partial_messages"] = True  # jawaban mengalir di browser saat ditulis
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        kwargs["add_dirs"] = [str(UPLOAD_DIR)]  # lampiran dari GUI boleh dibaca Claude
     if a.effort:
         kwargs["effort"] = a.effort
     if a.budget:
@@ -4006,7 +4132,10 @@ GUI_SHORTCUTS_TEXT = """\
 [bold]Salin:[/] tombol salin di pojok blok kode, di jawaban Claude dan di kartu command (Bash) · atau ketik
   [cyan]/copy[/] (jawaban terakhir) / [cyan]/copy 2[/] (blok kode nomor 2)
 [bold]Riwayat:[/] daftar percakapan di folder ini ada di sidebar kiri; klik salah satunya untuk melanjutkan ·
-  [cyan]+ Baru[/] = percakapan baru · sembunyikan/tampilkan: tombol panel di kiri atas, Riwayat, atau [cyan]Ctrl+B[/] (⌘B di Mac)
+  [cyan]+ Baru[/] = percakapan baru · kotak cari di atas daftar · ✎ ganti nama · 🗑 hapus (arahkan kursor ke item) ·
+  sembunyikan/tampilkan: tombol panel di kiri atas, Riwayat, atau [cyan]Ctrl+B[/] (⌘B di Mac)
+[bold]Lampiran:[/] tombol 📎, seret file ke halaman, atau tempel gambar ([cyan]Ctrl+V[/]); Claude membacanya dengan Read
+[bold]Notifikasi:[/] tombol 🔔 di bawah: bunyi + notifikasi saat Claude selesai atau minta izin selagi tab ini tidak dilihat
 [bold]Tugas background:[/] progres tampil di bawah · [cyan]/tasks[/] detail & log · [cyan]/stop 2[/] hentikan
 [bold]Goal:[/] [cyan]/goal[/] [dim]kondisi[/] kerja terus sampai terpenuhi · [cyan]/goal[/] status · [cyan]/goal clear[/] batal
 """
@@ -4120,9 +4249,21 @@ body.no-anim #side { transition: none; }
 .iconbtn svg { width: 18px; height: 18px; }
 #sidetoggle[aria-pressed="true"] { color: var(--accent); }
 #sessions { flex: 1; overflow-y: auto; padding: 2px 8px 14px; display: flex; flex-direction: column; gap: 1px; }
-.sess { display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%; text-align: left;
-  border: 1px solid transparent; background: none; border-radius: 8px; padding: 6px 10px; }
-.sess:hover:not(:disabled) { background: var(--user); border-color: transparent; }
+.sess { display: flex; align-items: center; border-radius: 8px; }
+.sess:hover { background: var(--user); }
+.sess .open { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; text-align: left; background: none;
+  border: 1px solid transparent; border-radius: 8px; padding: 6px 4px 6px 10px; }
+.sess .open:hover:not(:disabled) { border-color: transparent; }
+.sess .acts { display: flex; padding-right: 4px; opacity: 0; transition: opacity .12s; }
+.sess:hover .acts, .sess:focus-within .acts { opacity: 1; }
+.sess .acts .iconbtn { width: 26px; height: 26px; }
+.sess .acts .iconbtn svg { width: 15px; height: 15px; }
+.sess .acts .del:hover:not(:disabled) { color: var(--err); }
+.sess .rename { flex: 1; min-width: 0; margin: 4px 6px; font: 14px var(--sans); padding: 4px 7px; border-radius: 6px;
+  border: 1px solid var(--accent); background: var(--bg); color: var(--text); }
+#sesssearch { margin: 0 8px 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: 13px var(--sans); }
+@media (hover: none) { .sess .acts { opacity: 1; } }
 .sess.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
 .sess.on .t { font-weight: 600; }
 .sess .t { font-size: 14px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -4179,6 +4320,30 @@ pre.log { padding: 0 2px; }
 .rows:empty { display: none; }
 .rows div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer { position: relative; display: flex; gap: 8px; align-items: flex-end; }
+#attach { height: 44px; width: 38px; }
+#attach svg { width: 20px; height: 20px; }
+#chips { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 7px; }
+#chips:empty { display: none; }
+.chip { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; padding: 3px 3px 3px 7px; font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--raised); }
+.chip img { width: 26px; height: 26px; object-fit: cover; border-radius: 4px; }
+.chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.busy { opacity: .6; } .chip.err { border-color: var(--err); color: var(--err); }
+.chip button { border: 0; background: none; padding: 0 5px; color: var(--muted); font-size: 15px; }
+.user .att { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.user .att span { font-size: 12.5px; padding: 2px 8px; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); }
+#drop { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.38); color: #fff; font-size: 18px; font-weight: 600; pointer-events: none; }
+#drop div { padding: 20px 28px; border: 2px dashed #fff; border-radius: 14px; }
+body.dragging #drop { display: flex; }
+.reply.draft .md::after { content: "▍"; color: var(--accent); animation: caret 1s steps(2, start) infinite; }
+@keyframes caret { to { visibility: hidden; } }
+.notice { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 6px 16px; font-size: 13.5px;
+  background: var(--accent-soft); border-bottom: 1px solid var(--border); }
+.notice[hidden] { display: none; }
+.notice .cpy { width: 26px; height: 26px; }
+#notifybtn { width: 26px; height: 26px; } #notifybtn svg { width: 16px; height: 16px; }
+#notifybtn.off { color: var(--faint); }
 textarea { flex: 1; resize: none; font: 15px/1.45 var(--sans); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border);
   background: var(--bg); color: var(--text); max-height: 40vh; min-height: 44px; }
 #send { height: 44px; padding: 0 18px; }
@@ -4217,12 +4382,16 @@ footer select.yolo { color: var(--err); font-weight: 600; }
 </header>
 <div id="banner" class="banner" hidden></div>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="notice" class="notice" hidden><span id="noticeText"></span><span id="noticeCopy"></span>
+  <button id="noticeClose" class="iconbtn" title="Tutup" aria-label="Tutup">×</button></div>
+<div id="drop"><div>Lepaskan untuk melampirkan</div></div>
 <div id="body">
 <aside id="side" aria-label="Riwayat obrolan">
   <div class="side-inner">
   <div class="side-head"><span class="grow">Riwayat obrolan</span>
     <button id="sidenew" title="Mulai percakapan baru (konteks lama dibuang)">+ Baru</button>
     <button id="sidehide" class="iconbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/><path d="M16 9l-3 3 3 3"/></svg></button></div>
+  <input id="sesssearch" type="search" placeholder="Cari percakapan…" aria-label="Cari percakapan">
   <nav id="sessions"></nav>
   </div>
 </aside>
@@ -4232,8 +4401,11 @@ footer select.yolo { color: var(--err); font-weight: 600; }
   <div id="working" hidden aria-live="polite"><div class="spin"></div><div class="txt" id="workingText"></div>
     <button id="stop" class="danger" title="Hentikan Claude (Esc)">■ Stop</button></div>
   <div class="rows" id="rows"></div>
+  <div id="chips"></div>
   <div class="composer">
     <div id="sugg" hidden></div>
+    <button id="attach" class="iconbtn" title="Lampirkan file atau gambar (bisa juga diseret ke jendela atau ditempel)" aria-label="Lampirkan file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a2 2 0 0 1-2.8-2.8l7.9-7.9"/></svg></button>
+    <input id="fileinput" type="file" multiple hidden>
     <textarea id="input" rows="1" aria-label="Pesan" autofocus></textarea>
     <button id="send" class="primary" title="Kirim (Enter)">Kirim</button>
   </div>
@@ -4241,6 +4413,7 @@ footer select.yolo { color: var(--err); font-weight: 600; }
     <label>Mode <select id="mode" title="Ganti mode izin (Shift+Tab)"></select></label>
     <label>Model <select id="model"></select></label>
     <span id="ctx"></span><span id="cost"></span><span id="goal"></span>
+    <button id="notifybtn" class="iconbtn" type="button"></button>
     <span id="conn">menyambung…</span>
   </footer>
 </div></div>
@@ -4351,25 +4524,77 @@ function setSide(open, remember) {
   if (remember) { try { localStorage.setItem("ccmini.side", open ? "1" : "0"); } catch (e) { /* tanpa storage */ } }
   if (open) loadSessions();
 }
+const ICON_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
+let sessItems = [];
 async function loadSessions() {
   if (!sideOpen()) return;
   const r = await post("sessions");
   if (!r || !Array.isArray(r.items)) return;
-  sessCurrent = r.current || "";
-  const nav = $("sessions");
+  sessCurrent = r.current || ""; sessItems = r.items;
+  renderSessions();
+}
+function renderSessions() {
+  const nav = $("sessions"), q = $("sesssearch").value.trim().toLowerCase();
+  if (nav.querySelector(".rename")) return;  // sedang mengetik nama baru
   nav.textContent = "";
-  if (!r.items.length) { nav.appendChild(mk("div", "sess-empty", "Belum ada percakapan di folder ini.")); return; }
-  r.items.forEach(it => {
-    const b = mk("button", "sess" + (it.id === sessCurrent ? " on" : ""));
-    b.type = "button"; b.title = it.title;
-    b.appendChild(mk("span", "t", it.title));
-    b.appendChild(mk("span", "w", it.when + (it.branch ? " · ⎇ " + it.branch : "")));
-    if (it.id === sessCurrent) b.setAttribute("aria-current", "true");
-    b.onclick = () => {
-      if (it.id !== sessCurrent) goConversation("/resume " + it.id, b);
-    };
-    nav.appendChild(b);
-  });
+  const items = q ? sessItems.filter(it => it.title.toLowerCase().includes(q)) : sessItems;
+  if (!items.length) {
+    nav.appendChild(mk("div", "sess-empty", q ? "Tidak ada percakapan yang cocok." : "Belum ada percakapan di folder ini."));
+    return;
+  }
+  items.forEach(it => nav.appendChild(sessRow(it)));
+}
+function iconBtn(svg, tip, fn, cls) {
+  const b = mk("button", "iconbtn" + (cls ? " " + cls : "")); b.type = "button"; b.innerHTML = svg;
+  b.title = tip; b.setAttribute("aria-label", tip);
+  b.onclick = (e) => { e.stopPropagation(); fn(); };
+  return b;
+}
+function sessRow(it) {
+  const cur = it.id === sessCurrent;
+  const row = mk("div", "sess" + (cur ? " on" : ""));
+  const open = mk("button", "open"); open.type = "button"; open.title = it.title;
+  open.appendChild(mk("span", "t", it.title));
+  open.appendChild(mk("span", "w", it.when + (it.branch ? " · ⎇ " + it.branch : "")));
+  if (cur) open.setAttribute("aria-current", "true");
+  open.onclick = () => { if (it.id !== sessCurrent) goConversation("/resume " + it.id, row); };
+  const acts = mk("div", "acts");
+  acts.appendChild(iconBtn(ICON_EDIT, "Ganti nama", () => startRename(row, it)));
+  const del = iconBtn(ICON_TRASH, cur ? "Percakapan yang sedang dibuka tidak bisa dihapus" : "Hapus percakapan",
+    () => deleteSession(it), "del");
+  del.disabled = cur;
+  acts.appendChild(del);
+  row.append(open, acts);
+  return row;
+}
+function startRename(row, it) {
+  const inp = mk("input", "rename"); inp.value = it.title; inp.maxLength = 100; inp.setAttribute("aria-label", "Nama percakapan");
+  row.querySelector(".open").hidden = true; row.querySelector(".acts").hidden = true;
+  row.prepend(inp); inp.focus(); inp.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const title = inp.value.trim();
+    inp.remove();
+    if (save && title && title !== it.title) {
+      const r = await post("rename", { id: it.id, title });
+      if (r.ok) { it.title = title; toast("✓ Nama percakapan diubah"); } else toast(r.error || "Gagal mengganti nama");
+    }
+    renderSessions();
+  };
+  inp.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+  };
+  inp.onblur = () => finish(true);
+}
+async function deleteSession(it) {
+  if (!confirm('Hapus percakapan "' + it.title + '"?\n\nPercakapan ini dihapus permanen dan tidak bisa dikembalikan.')) return;
+  const r = await post("delete", { id: it.id });
+  if (r.ok) { sessItems = sessItems.filter(x => x.id !== it.id); renderSessions(); toast("✓ Percakapan dihapus"); }
+  else toast(r.error || "Gagal menghapus");
 }
 function refreshSessions() { clearTimeout(sessTimer); sessTimer = setTimeout(loadSessions, 300); }
 let switchTimer = null;
@@ -4394,9 +4619,119 @@ function title() {
   document.title = pre + (st.name ? st.name + " · " : "") + "claude-code-mini";
 }
 
+// ---------- notifikasi: Claude selesai / minta izin saat tab tidak dilihat ----------
+const ICON_BELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>';
+const ICON_BELL_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/><path d="M3 3l18 18"/></svg>';
+const notifyOn = () => { try { return localStorage.getItem("ccmini.notify") !== "0"; } catch (e) { return true; } };
+let audioCtx = null;
+function unlockAudio() {  // browser baru mengizinkan suara setelah ada klik / ketikan
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (e) { /* tanpa suara */ }
+}
+function chime() {  // dua nada pendek dan pelan
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  [880, 1320].forEach((f, i) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain(), s0 = t + i * 0.13;
+    o.type = "sine"; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, s0); g.gain.exponentialRampToValueAtTime(0.07, s0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, s0 + 0.26);
+    o.connect(g); g.connect(audioCtx.destination); o.start(s0); o.stop(s0 + 0.3);
+  });
+}
+function notify(head, body) {
+  if (!notifyOn() || (!document.hidden && document.hasFocus())) return;  // sedang dilihat: tidak perlu
+  chime();
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
+      const n = new Notification(head, { body: body || "", tag: "claude-code-mini" });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch (e) { /* tidak didukung */ }
+  }
+}
+function askNotify() {
+  unlockAudio();
+  if (notifyOn() && "Notification" in window && Notification.permission === "default") {
+    try { Notification.requestPermission(); } catch (e) { /* tidak didukung */ }
+  }
+}
+function notifyUI() {
+  const b = $("notifybtn"), on = notifyOn();
+  b.innerHTML = on ? ICON_BELL : ICON_BELL_OFF; b.classList.toggle("off", !on);
+  b.title = "Notifikasi + bunyi saat Claude selesai atau minta izin (kalau tab ini tidak dilihat): " + (on ? "aktif" : "mati");
+  b.setAttribute("aria-label", b.title); b.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+// ---------- lampiran: tombol 📎, seret ke jendela, tempel ----------
+const ATT_HEAD = "📎 Lampiran dari user (baca dengan tool Read):";
+const pending = [];
+function renderChips() {
+  const c = $("chips");
+  c.textContent = "";
+  pending.forEach((a, i) => {
+    const ch = mk("div", "chip" + (a.state === "busy" ? " busy" : a.state === "err" ? " err" : ""));
+    if (a.url) { const im = mk("img"); im.src = a.url; im.alt = ""; ch.appendChild(im); }
+    ch.appendChild(mk("span", "n", a.state === "busy" ? "Mengunggah " + a.name + "…" : a.state === "err" ? a.name + ": " + a.error : a.name));
+    const x = mk("button", null, "×"); x.type = "button"; x.title = "Lepas lampiran"; x.setAttribute("aria-label", "Lepas " + a.name);
+    x.onclick = () => { pending.splice(i, 1); if (a.url) URL.revokeObjectURL(a.url); renderChips(); };
+    ch.appendChild(x);
+    c.appendChild(ch);
+  });
+}
+function addFiles(files) {
+  [...files].forEach(f => {
+    const a = { name: f.name || "gambar.png", state: "busy", url: (f.type || "").startsWith("image/") ? URL.createObjectURL(f) : "" };
+    pending.push(a); renderChips();
+    const rd = new FileReader();
+    rd.onload = async () => {
+      const r = await post("upload", { name: a.name, data: rd.result });
+      if (r.ok) Object.assign(a, { state: "ok", path: r.path, name: r.name, image: r.image });
+      else Object.assign(a, { state: "err", error: r.error || "gagal diunggah" });
+      renderChips();
+    };
+    rd.onerror = () => { Object.assign(a, { state: "err", error: "tidak bisa dibaca" }); renderChips(); };
+    rd.readAsDataURL(f);
+  });
+}
+
+// ---------- streaming: jawaban yang sedang ditulis ----------
+function dropDraft() { const d = chat.querySelector(".reply.draft"); if (d) d.remove(); }
+function showUpdate(text) {
+  if (!text) return;
+  $("noticeText").textContent = "⬆ " + text;
+  const c = $("noticeCopy"); c.textContent = "";
+  c.appendChild(copyBtn("Salin perintah", () => "claude-code-mini --update"));
+  $("notice").hidden = false;
+}
+
 // ---------- event dari claude-code-mini ----------
 const H = {
-  user(ev) { add(mk("div", "user", ev.text)); },
+  user(ev) {  // lampiran tampil sebagai label kecil, bukan daftar path
+    const d = mk("div", "user"), text = ev.text || "";
+    const i = text.startsWith(ATT_HEAD) ? 0 : text.indexOf("\n\n" + ATT_HEAD);
+    if (i < 0) d.textContent = text;
+    else {
+      if (i > 0) d.appendChild(document.createTextNode(text.slice(0, i)));
+      const att = mk("div", "att");
+      text.slice(i).split("\n").filter(l => l.startsWith("- ")).forEach(l => {
+        const img = / \(gambar\)$/.test(l), path = l.slice(2).replace(/ \(gambar\)$/, "");
+        const span = mk("span", null, (img ? "🖼 " : "📄 ") + path.split(/[\\/]/).pop()); span.title = path;
+        att.appendChild(span);
+      });
+      d.appendChild(att);
+    }
+    add(d);
+  },
+  draft(ev) {  // teks yang sedang ditulis Claude; diganti jawaban final (event assistant)
+    let d = chat.querySelector(".reply.draft");
+    const stick = nearBottom();
+    if (!d) { d = mk("div", "reply draft"); d.appendChild(mk("div", "md")); add(d); }
+    d.firstChild.innerHTML = ev.html; links(d.firstChild);
+    toBottom(stick);
+  },
+  update(ev) { showUpdate(ev.text); },
   reset(ev) {  // percakapan berganti: lembar baru, bukan lanjut di bawah percakapan sebelumnya
     switching(false);
     chat.textContent = ""; tools.clear(); asks.clear(); lastLog = null; answers.length = 0;
@@ -4474,6 +4809,7 @@ const H = {
     add(pre, true);
   },
   ask(ev) {
+    notify("🔐 Claude minta izin", (st.name ? st.name + ": " : "") + (ev.title || "pertanyaan menunggu jawaban"));
     const card = mk("div", "ask");
     card.appendChild(mk("div", "title", ev.title));
     if (ev.body) {
@@ -4517,6 +4853,7 @@ const H = {
   status(s) {
     // daftar riwayat diperbarui saat percakapan berganti (/clear, lanjutkan) atau giliran selesai (judul & urutan)
     if (s.session !== st.session || (st.busy && !s.busy)) refreshSessions();
+    if (st.busy && !s.busy && !s.asking) notify("✓ Claude selesai", st.name || "claude-code-mini");
     st.session = s.session;
     st.busy = s.busy; st.asking = s.asking; st.tasks = s.tasks || []; st.mode = s.mode; st.model = s.model;
     $("working").hidden = !(s.busy || s.asking);
@@ -4551,10 +4888,12 @@ function handle(ev) {
     tools.clear(); asks.clear(); lastLog = null; lastSeq = 0;
     st.modes = ev.modes || {}; st.cycle = ev.cycle || []; st.models = ev.models || {}; st.name = ev.name || "";
     $("repo").textContent = "📂 " + ev.repo; $("repo").title = ev.repo;
+    showUpdate(ev.update);
     title();
     return;
   }
   if (ev.seq) { if (ev.seq <= lastSeq) return; lastSeq = ev.seq; }
+  if (!["draft", "status", "update", "copy"].includes(ev.type)) dropDraft();
   const f = H[ev.type];
   if (f) f(ev);
 }
@@ -4610,9 +4949,23 @@ function guard(cmd) {
   return true;
 }
 function send() {
-  const text = input.value.trim();
-  if (!text || !guard(text)) return;
-  if (copyCmd(text)) { sent.push(text); histIdx = -1; input.value = ""; autosize(); hideSugg(); return; }
+  let text = input.value.trim();
+  if (pending.some(a => a.state === "busy")) { toast("Tunggu sebentar, lampiran masih diunggah…"); return; }
+  const files = pending.filter(a => a.state === "ok");
+  if (!text && !files.length) return;
+  askNotify();  // izin notifikasi diminta saat ada klik/ketikan (aturan browser)
+  if (files.length) {
+    if (/^[\/!]/.test(text) || (text.startsWith("#") && !text.startsWith("##"))) {
+      toast("Lampiran tidak bisa dikirim bersama /perintah, !command, atau # catatan"); return;
+    }
+    text = (text || "Lihat lampiran berikut.") + "\n\n" + ATT_HEAD + "\n"
+      + files.map(a => "- " + a.path + (a.image ? " (gambar)" : "")).join("\n");
+    pending.forEach(a => { if (a.url) URL.revokeObjectURL(a.url); });
+    pending.length = 0; renderChips();
+  } else {
+    if (!guard(text)) return;
+    if (copyCmd(text)) { sent.push(text); histIdx = -1; input.value = ""; autosize(); hideSugg(); return; }
+  }
   post("send", { text });
   sent.push(text); histIdx = -1;
   input.value = ""; autosize(); hideSugg();
@@ -4742,6 +5095,37 @@ document.addEventListener("click", (e) => {  // layar sempit: sidebar menutupi h
   window.matchMedia("(min-width: 860px)").addEventListener("change", (e) => setSide(e.matches && savedOpen(), false));
 }
 
+$("sesssearch").addEventListener("input", renderSessions);
+$("sesssearch").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); e.target.value = ""; renderSessions(); }
+});
+$("notifybtn").onclick = () => {
+  try { localStorage.setItem("ccmini.notify", notifyOn() ? "0" : "1"); } catch (e) { /* tanpa storage */ }
+  notifyUI(); askNotify();
+  toast(notifyOn() ? "🔔 Notifikasi aktif (saat tab ini tidak dilihat)" : "🔕 Notifikasi mati");
+};
+notifyUI();
+document.addEventListener("pointerdown", unlockAudio, { once: true });
+$("noticeClose").onclick = () => { $("notice").hidden = true; };
+$("attach").onclick = () => $("fileinput").click();
+$("fileinput").onchange = (e) => { addFiles(e.target.files); e.target.value = ""; input.focus(); };
+input.addEventListener("paste", (e) => {
+  const fs = [...((e.clipboardData && e.clipboardData.files) || [])];
+  if (fs.length) { e.preventDefault(); addFiles(fs); }
+});
+{
+  let depth = 0;
+  const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  window.addEventListener("dragenter", (e) => { if (hasFiles(e)) { e.preventDefault(); depth++; document.body.classList.add("dragging"); } });
+  window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; document.body.classList.remove("dragging"); } });
+  window.addEventListener("drop", (e) => {
+    depth = 0; document.body.classList.remove("dragging");
+    if (!hasFiles(e) || !e.dataTransfer.files.length) return;
+    e.preventDefault(); addFiles(e.dataTransfer.files); input.focus();
+  });
+}
+
 chat.appendChild(emptyState());
 autosize();
 connect();
@@ -4803,6 +5187,41 @@ def rich_html(renderable: Any, width: int = GUI_WIDTH) -> str:
                                 highlight=False, legacy_windows=False)
     c = _HTML_CONSOLE
     return segments_html(c.render(renderable, c.options.update(width=width)))
+
+
+UPLOAD_MAX = 25 * 1024 * 1024
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def save_upload(name: str, data: str) -> dict[str, Any]:
+    """Simpan lampiran dari browser (base64) ke UPLOAD_DIR/<waktu-acak>/<nama aman>. Return path-nya untuk pesan."""
+    try:
+        raw = base64.b64decode(data.split(",", 1)[-1], validate=False)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "Isi file rusak."}
+    if len(raw) > UPLOAD_MAX:
+        return {"ok": False, "error": f"File terlalu besar (maks {UPLOAD_MAX // 1024 // 1024} MB)."}
+    base = re.sub(r"[^\w.\- ]", "_", Path(name.replace("\\", "/")).name).strip(" .") or "lampiran"
+    stem, ext = os.path.splitext(base)
+    safe = stem[:80] + ext[:12]
+    folder = UPLOAD_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / safe
+        path.write_bytes(raw)
+    except OSError as e:
+        return {"ok": False, "error": f"Gagal menyimpan: {e}"}
+    return {"ok": True, "path": str(path), "name": safe, "size": len(raw), "image": ext.lower() in IMAGE_EXTS}
+
+
+def clean_uploads(days: int = 14) -> None:
+    """Hapus folder lampiran lama milik claude-code-mini sendiri (UPLOAD_DIR/*), bukan file lain."""
+    limit = time.time() - days * 86400
+    with contextlib.suppress(OSError):
+        for d in UPLOAD_DIR.iterdir():
+            with contextlib.suppress(OSError):
+                if d.is_dir() and d.stat().st_mtime < limit:
+                    shutil.rmtree(d, ignore_errors=True)
 
 
 def md_html(text: str, copy_nums: list[int] | None = None) -> str:
@@ -4884,7 +5303,7 @@ class WebHub:
         ev["seq"] = self.seq
         if ev["type"] == "status":
             self.status = ev
-        else:
+        elif ev["type"] not in ("draft", "update"):  # sementara: tidak diputar ulang di tab baru
             self.log.append(ev)
         for q in list(self.clients):
             q.put_nowait(ev)
@@ -4980,6 +5399,40 @@ class WebUI(UI):
         super().__init__(repo, args)
         self.prompt = WebPrompt(self)  # type: ignore[assignment]
         self.keys = _NoKeys()  # type: ignore[assignment]
+        self.draft_idx: Any = None  # blok teks yang sedang mengalir (streaming)
+        self.draft_text = ""
+        self.draft_sent = 0.0
+
+    async def check_session(self, sid: str) -> str:
+        """"" kalau sid percakapan di folder ini dan SDK-nya mendukung ganti nama/hapus; kalau tidak, pesan salahnya."""
+        if rename_session is None or delete_session is None:
+            return "SDK terlalu lama untuk fitur ini. Jalankan: claude-code-mini --update"
+        infos = await asyncio.to_thread(session_infos, self.repo, 500)
+        return "" if any(s.session_id == sid for s in infos) else "Percakapan itu tidak ada di folder ini."
+
+    def on_stream(self, msg: Any) -> None:
+        """Teks jawaban yang sedang ditulis -> event "draft" (paling sering ~12x per detik). Jawaban finalnya tetap
+        datang lewat show_text dan menggantikan draf ini di browser."""
+        if msg.parent_tool_use_id:  # sub-agent: tidak dialirkan
+            return
+        ev = msg.event or {}
+        kind = ev.get("type")
+        if kind == "content_block_start":
+            block = ev.get("content_block") or {}
+            self.draft_idx = ev.get("index") if block.get("type") == "text" else None
+            self.draft_text = ""
+        elif kind == "content_block_delta" and ev.get("index") == self.draft_idx:
+            delta = ev.get("delta") or {}
+            if delta.get("type") == "text_delta":
+                self.draft_text += delta.get("text") or ""
+                now = time.monotonic()
+                if now - self.draft_sent >= 0.08:
+                    self.draft_sent = now
+                    self.hub.emit("draft", {"html": md_html(self.draft_text)})
+        elif kind == "content_block_stop" and ev.get("index") == self.draft_idx:
+            if self.draft_text.strip():
+                self.hub.emit("draft", {"html": md_html(self.draft_text)})
+            self.draft_idx, self.draft_text = None, ""
 
     # --- tampilan ---
     def spin_start(self, tool: str | None = None) -> None:
@@ -5157,7 +5610,7 @@ class WebUI(UI):
 
     def hello(self) -> dict[str, Any]:
         return {"repo": str(self.repo), "name": self.repo.name or str(self.repo), "modes": MODE_LABEL,
-                "cycle": MODE_CYCLE, "models": MODEL_ALIASES, "windows": WINDOWS}
+                "cycle": MODE_CYCLE, "models": MODEL_ALIASES, "windows": WINDOWS, "update": update_notice() or ""}
 
     def completions(self, text: str) -> list[dict[str, str]]:
         """Saran untuk kolom chat: /perintah di awal baris, @path di mana saja."""
@@ -5205,6 +5658,28 @@ class WebUI(UI):
                     console.print(f"[red]✗ Gagal mengganti model: {e}[/]")
         elif action == "complete":
             return {"items": self.completions(str(body.get("text") or ""))}
+        elif action == "rename":  # sidebar: ganti nama percakapan
+            sid, title = str(body.get("id") or ""), oneline(str(body.get("title") or ""))[:100]
+            err = await self.check_session(sid)
+            if err or not title:
+                return {"ok": False, "error": err or "Nama tidak boleh kosong."}
+            try:
+                await asyncio.to_thread(rename_session, sid, title, str(self.repo))
+            except Exception as e:
+                return {"ok": False, "error": f"Gagal mengganti nama: {e}"}
+        elif action == "delete":  # sidebar: hapus percakapan (browser sudah minta konfirmasi)
+            sid = str(body.get("id") or "")
+            err = await self.check_session(sid)
+            if not err and sid == self.session_id:
+                err = "Percakapan yang sedang dibuka tidak bisa dihapus. Pindah atau mulai percakapan baru dulu."
+            if err:
+                return {"ok": False, "error": err}
+            try:
+                await asyncio.to_thread(delete_session, sid, str(self.repo))
+            except Exception as e:
+                return {"ok": False, "error": f"Gagal menghapus: {e}"}
+        elif action == "upload":  # lampiran dari browser -> file di UPLOAD_DIR, dibaca Claude dengan Read
+            return await asyncio.to_thread(save_upload, str(body.get("name") or ""), str(body.get("data") or ""))
         elif action == "sessions":  # sidebar riwayat: percakapan di folder ini, terbaru dulu
             infos = await asyncio.to_thread(session_infos, self.repo, 60)
             return {"current": self.session_id or "", "items": [
@@ -5431,6 +5906,14 @@ def run_gui(repo: Path, args: argparse.Namespace, resume_id: str | None, continu
             release = on_ctrl_c(asyncio.get_running_loop(), request_stop)
             console = WebConsole(hub.emit)
             ticker = asyncio.ensure_future(status_ticker(ui, hub))
+            await asyncio.to_thread(clean_uploads)
+
+            async def update_watch() -> None:  # versi baru terdeteksi saat GUI jalan -> beri tahu browser
+                note = update_notice(await asyncio.to_thread(check_for_update))
+                if note:
+                    hub.emit("update", {"text": note})
+
+            asyncio.ensure_future(update_watch())
             try:
                 rid, cont = resume_id, continue_last
                 if rid:
@@ -5528,6 +6011,8 @@ def main() -> None:
                    help=f"batas ukuran output tool dalam MB (default: {DEFAULT_BUFFER_MB})")
     p.add_argument("--setup", action="store_true",
                    help="pasang/update library & perintah `claude-code-mini`")
+    p.add_argument("--update", action="store_true",
+                   help="update ke versi terbaru dari GitHub (script + library)")
     p.add_argument("--gui", action="store_true",
                    help="buka tampilan GUI di browser (server lokal di 127.0.0.1, tanpa library tambahan)")
     p.add_argument("--port", type=int, default=GUI_PORT,
@@ -5535,6 +6020,8 @@ def main() -> None:
     p.add_argument("--no-browser", action="store_true",
                    help="GUI: jangan buka browser otomatis (mis. di server; buka URL-nya lewat SSH tunnel)")
     args = p.parse_args()
+    if args.update:  # biasanya sudah ditangani bootstrap()
+        update_self()
     if args.gui and args.print:
         p.error("--gui tidak bisa digabung dengan -p")
     if args.yolo:
@@ -5579,6 +6066,12 @@ def main() -> None:
                 "[dim]Jalankan sebagai user biasa, atau kalau ini memang container/VM sekali pakai: "
                 "IS_SANDBOX=1 claude-code-mini … --yolo[/]"
             )
+
+    if not args.print:
+        note = update_notice()
+        if note and not args.gui:
+            console.print(f"[yellow]⬆ {note}[/]")
+        threading.Thread(target=check_for_update, daemon=True).start()  # hasilnya dipakai saat start berikutnya / GUI
 
     keep_awake()
     resume_id: str | None = None

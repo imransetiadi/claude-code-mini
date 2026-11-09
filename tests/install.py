@@ -197,6 +197,19 @@ def test_again(download):
     rc, out = run_installed("[[say:masih jalan setelah update]]")
     check("N11 perintah terpasang masih jalan setelah update", rc == 0 and "masih jalan setelah update" in out,
           out[-800:])
+    if download:  # --update: ambil versi GitHub (commit ini) dan pulihkan salinan yang berubah
+        installed = HOMEDIR / ".local" / "share" / "claude-code-mini" / "claude-code-mini.py"
+        installed.write_bytes(installed.read_bytes() + b"\n# diubah tes\n")
+        upd = subprocess.run([str(LAUNCHER), "--update"], env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                             timeout=900)
+        out = (upd.stdout + upd.stderr).decode("utf-8", "replace")
+        same = installed.read_bytes().replace(b"\r\n", b"\n") == (ROOT / "claude-code-mini.py").read_bytes().replace(b"\r\n", b"\n")
+        again = subprocess.run([str(LAUNCHER), "--update"], env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                               timeout=900)
+        out2 = (again.stdout + again.stderr).decode("utf-8", "replace")
+        check("N13 claude-code-mini --update: versi GitHub dipasang, lalu 'sudah versi terbaru'",
+              upd.returncode == 0 and "diperbarui" in out and same and again.returncode == 0
+              and "Sudah versi terbaru" in out2, (out + out2)[-1200:])
 
 
 def test_bash_on_windows():

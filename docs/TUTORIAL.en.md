@@ -434,7 +434,7 @@ browser. The terminal stays open and shows the address:
 terminal; only the presentation differs:
 
 - **Conversation.** Your messages appear as bubbles, and Claude's answers are rendered as Markdown (headings, lists,
-  tables, code blocks). Claude's thinking (`✻ Berpikir…`) can be expanded.
+  tables, code blocks) that streams in while Claude writes it. Claude's thinking (`✻ Berpikir…`) can be expanded.
 - **Tool cards.** Each tool call is a card: `Bash` with its command, `Update` with a colored, line-numbered diff,
   `Read`, `Write`, the todo list, sub-agents. Results appear under their card; long output opens with "Lihat output
   lengkap" ("show full output").
@@ -451,9 +451,23 @@ terminal; only the presentation differs:
 - **History sidebar** (`Riwayat obrolan`, "chat history"). On the left: the conversations in the project folder,
   newest first, with the open one marked. Click one to continue it, or **+ Baru** for a new one. Each switch opens a
   clean page: a new conversation starts empty, and a continued one shows its own messages, answers and tool cards
-  from the start, under its title. Reloading the page shows only the open conversation. To hide the sidebar, use the
+  from the start, under its title. Reloading the page shows only the open conversation. The `Cari percakapan…`
+  ("search conversations") box above the list filters it by title. Point at a conversation to show ✎ (rename; Enter
+  saves, Esc cancels) and 🗑 (delete for good, after a confirmation; the open conversation can't be deleted). To hide
+  the sidebar, use the
   panel button at the top left, the ‹ button next to **+ Baru**, or Ctrl+B (⌘B on a Mac); the choice is remembered.
   In a narrow window the sidebar slides in over the page.
+- **Attachments.** Click 📎 left of the message box, drag files onto the page, or paste an image or screenshot with
+  Ctrl+V. Each file shows as a chip above the message box (× removes it), images with a thumbnail. When you send,
+  the files are saved under `~/.local/share/claude-code-mini/uploads/` (up to 25 MB each, deleted after 14 days) and
+  Claude reads them with its `Read` tool, which handles images, PDFs and text. Your bubble lists the attachments.
+  (For files already in the project folder, `@path` is still handier, section 7.2.)
+- **Notifications.** The 🔔 button in the bottom bar turns on a soft chime plus a browser notification
+  (`✓ Claude selesai`, "Claude is done"; `🔐 Claude minta izin`, "Claude asks for permission") when Claude finishes
+  or asks for permission while you are in another tab or window. The browser asks for notification permission the
+  first time you send a message; click 🔔 again to turn it off.
+- **New version.** When a newer version is on GitHub, a strip at the top of the page says so, with a button that
+  copies the `claude-code-mini --update` command (section 17).
 - **Bottom bar.** Permission mode and model selectors, context usage, cost, goal, and background tasks.
 - **Top bar.** **Baru** ("new", `/clear`), **Riwayat** ("history": show or hide the history sidebar), **Rewind**,
   **Bantuan** ("help") and **Keluar** ("quit").
@@ -466,6 +480,7 @@ terminal; only the presentation differs:
 | Tab | pick the `/command` or `@path` suggestion shown while typing |
 | ↑ (empty box) | the last message you sent |
 | Ctrl+B (⌘B on a Mac) | show or hide the history sidebar |
+| Ctrl+V (an image or file on the clipboard) | attach it |
 | 1 / 2 / 3 | answer the permission question on screen |
 
 All other commands and shortcuts (`!command`, `@file`, `# note`, `/goal`, `/tasks`, `/model`, …) are typed into the
@@ -1088,10 +1103,24 @@ SSH tunnel.
 
 ## 17. Updating and uninstalling
 
-If you installed with the installer ([section 3.0](#30-the-fastest-way-the-one-command-installer)), updating is
-just running the same installer command again.
+Updating to the newest version takes one command:
 
-If you installed by hand, update to the latest version with:
+```bash
+claude-code-mini --update
+```
+
+It downloads the latest `claude-code-mini.py` from GitHub into the install folder, then updates the libraries
+(including the Claude Code engine) as `--setup` does. On Windows, close the other claude-code-mini windows first.
+
+You don't have to check by hand: about twice a day claude-code-mini looks at GitHub in the background. When a
+newer version is out, it prints `⬆ Versi baru claude-code-mini tersedia. Update dengan:  claude-code-mini --update`
+("a new version is available; update with …") when it starts, and the GUI shows a strip at the top of the page with
+a button that copies the command. Turn the check off with `CCMINI_NO_UPDATE_CHECK=1`.
+
+Running the installer command again ([section 3.0](#30-the-fastest-way-the-one-command-installer)) works too.
+
+If you installed by hand from a `git clone`, `--update` updates the installed command but not your clone. To keep
+both in step, update from the clone instead:
 
 ```bash
 cd ~/claude-code-mini     # the folder you cloned
@@ -1195,8 +1224,8 @@ usage: claude-code-mini [-h] [--model MODEL]
                         [--mode {default,acceptEdits,plan,auto,bypassPermissions,dontAsk}]
                         [--effort {low,medium,high,xhigh,max}]
                         [--budget BUDGET] [--yolo] [-c] [-r [SESSION_ID]]
-                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup] [--gui]
-                        [--port PORT] [--no-browser]
+                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup]
+                        [--update] [--gui] [--port PORT] [--no-browser]
                         [repo]
 ```
 
@@ -1213,6 +1242,7 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `-p`, `--print PROMPT` | one-shot, then exit (exit codes in section 13) |
 | `--buffer-mb MB` | the tool-output size limit (default: 64) |
 | `--setup` | install/update the libraries and the `claude-code-mini` command |
+| `--update` | download the newest version from GitHub, then update the libraries (section 17) |
 | `--gui` | open the GUI in your browser (section 4.1) |
 | `--port PORT` | GUI port (default: 8765; if it is taken, the next free one is used) |
 | `--no-browser` | GUI: don't open a browser (e.g. on a server, section 16.1) |
@@ -1257,6 +1287,8 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `~/.local/bin/claude-code-mini` | the launcher command |
 | `~/.local/share/claude-code-mini/claude-code-mini.py` | the copy of the script that actually runs |
 | `~/.local/share/claude-code-mini/venv/` | libraries: claude-agent-sdk (with the Claude Code engine), rich, prompt_toolkit |
+| `~/.local/share/claude-code-mini/uploads/` | attachments from the GUI (deleted after 14 days) |
+| `~/.local/share/claude-code-mini/update-check.json` | the result of the last version check |
 | `~/.claude-code-mini_history` | your typing history |
 | `~/.claude/projects/` | conversations (Claude Code format) |
 | `<project>/CLAUDE.md`, `<project>/.claude/` | project settings (section 15) |
@@ -1270,6 +1302,7 @@ If `XDG_DATA_HOME` is set, the data folder moves to `$XDG_DATA_HOME/claude-code-
 |---|---|
 | `ANTHROPIC_API_KEY` | the API key (required) |
 | `CCMINI_NO_CAFFEINATE=1` | macOS/Windows: don't keep the computer awake |
+| `CCMINI_NO_UPDATE_CHECK=1` | don't check GitHub for a new version (section 17) |
 | `CLAUDE_CODE_GIT_BASH_PATH` | Windows: where `bash.exe` is, if Git for Windows is installed in an unusual place |
 | `IS_SANDBOX=1` | allow YOLO mode as root (disposable containers/VMs only) |
 | `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` | the limit on consecutive `/goal` rejections (Claude Code default: 8) |

@@ -55,15 +55,18 @@ the tests again. Every part of the screen is explained in [Your first session](#
   reconnect after a crash.
 - **Copy answers and commands**: every code block in Claude's answers gets a number (`📋 /copy 2` in the terminal,
   a copy button in the GUI). `/copy` copies the last answer and `/copy 2` that code block, also over SSH.
-- **Chat history in the GUI**: a sidebar on the left lists the conversations in the project folder; click one to
-  continue it.
+- **A GUI that feels like a chat app**: answers stream in as Claude writes them; a history sidebar lists the
+  conversations in the project folder, with search, rename and delete; attach files and images with 📎, drag and
+  drop, or paste; a soft chime and a browser notification when Claude finishes or needs your permission while you
+  are in another tab.
 - **Input shortcuts**: `!command` runs a shell command and hands the output to Claude, `@path` attaches files or
   folders, `# note` saves a note to `CLAUDE.md`.
 - **Scriptable**: `-p` one-shot mode with meaningful exit codes for scripts and CI.
 - **Billing safety**: it refuses to run unless it is authenticated with `ANTHROPIC_API_KEY`, so it never draws on a
   Claude Pro/Max subscription. An optional `--budget` caps what a session can spend.
 - **One-command install** on macOS, Linux and Windows 11: the installer sets up Python if needed, asks for your API
-  key, checks it with Anthropic, and saves it.
+  key, checks it with Anthropic, and saves it. `claude-code-mini --update` fetches the newest version later, and the
+  app tells you when one is out.
 
 ## Install in one command
 
@@ -494,9 +497,11 @@ theme, and so do the screenshots below, which change with GitHub's theme.
 2. **History sidebar** (`Riwayat obrolan`): the conversations in the project folder, newest first, with the open one
    marked. Click one to continue it, or **+ Baru** to start a new one. Each switch opens a clean page: a new
    conversation starts empty, and a continued one shows its own messages, answers and tool cards from the start,
-   under its title. Reloading the page shows only the open conversation. To hide the sidebar, use the panel button
-   at the top left, the ‹ button next to **+ Baru**, or Ctrl+B (⌘B on a Mac); the choice is remembered. In a narrow
-   window the sidebar slides in over the page.
+   under its title. Reloading the page shows only the open conversation. The search box above the list filters it
+   by title, and pointing at a conversation shows ✎ (rename) and 🗑 (delete, after a confirmation; the open
+   conversation can't be deleted). To hide the sidebar, use the panel button at the top left, the ‹ button next to
+   **+ Baru**, or Ctrl+B (⌘B on a Mac); the choice is remembered. In a narrow window the sidebar slides in over the
+   page.
 3. **The conversation**: your messages are bubbles on the right, and each tool call is a card (here `Bash` with its
    command).
 4. **Permission questions are cards with buttons.** Click one or press `1`, `2` or `3`. Choosing `3`
@@ -514,12 +519,21 @@ theme, and so do the screenshots below, which change with GitHub's theme.
 
 1. **Tool cards** show diffs in color with line numbers, and command output under the command. Long output is cut
    short, and **Lihat output lengkap** ("show full output") opens the rest.
-2. **Claude's answers are rendered as Markdown**, and `✓ Selesai` sums up each turn, as in the terminal.
+2. **Claude's answers are rendered as Markdown** and stream in while Claude writes them (a blinking caret marks
+   the end); `✓ Selesai` sums up each turn, as in the terminal.
 3. **Copy buttons.** Every code block in an answer has a copy button in its top-right corner (tooltip
    `Salin kode · /copy 2`), every answer has one underneath (`Salin jawaban`), and a command card (`Bash`) shows one
    when you point at it. The copied code has no Enter at the end, so pasting it into a terminal doesn't run it yet.
 4. **The message box stays usable** while Claude works, with the same rules as in the terminal: the follow-up waits
    above the box (`⏳ dibaca Claude setelah langkah ini`) until Claude reads it after the current step.
+5. **Attachments.** Click 📎 left of the message box, drag files onto the page, or paste an image or a screenshot
+   with Ctrl+V. Each file shows as a chip above the box (× removes it); images get a thumbnail. When you send, the
+   files are saved under `~/.local/share/claude-code-mini/uploads/` (up to 25 MB each, cleaned up after 14 days)
+   and Claude reads them with its `Read` tool, which handles images, PDFs and text. Your bubble lists them.
+6. **Notifications.** The 🔔 button in the bottom bar turns on a soft chime plus a browser notification
+   (`✓ Claude selesai`, `🔐 Claude minta izin`) for when Claude finishes or asks for permission while you are in
+   another tab or window. The browser asks for permission the first time you send a message; click 🔔 to turn it
+   off.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/gui-session-dark.png">
@@ -538,6 +552,7 @@ Keys in the GUI:
 | Tab | Pick the `/command` or `@path` suggestion shown while typing |
 | ↑ in the empty message box | Bring back the last message you sent |
 | Ctrl+B (⌘B on a Mac) | Show or hide the history sidebar |
+| Ctrl+V with an image or file copied | Attach it |
 | 1 / 2 / 3 | Answer the permission question on screen |
 
 Everything else, such as `!command`, `@file`, `# note`, `/goal`, `/tasks`, `/model` or `/copy 2`, is typed into the
@@ -665,14 +680,32 @@ remembered per project in `.claude/settings.local.json`.
 | `Baru` · `Riwayat` · `Bantuan` · `Keluar` · `Kirim` | New · History · Help · Quit · Send (GUI buttons) |
 | `Lihat output lengkap` | Show full output |
 | `Salin kode` · `Salin jawaban` · `Salin command` · `Disalin` | Copy code · Copy answer · Copy command · Copied (GUI) |
-| `Riwayat obrolan` | Chat history (GUI sidebar) |
+| `Riwayat obrolan` · `Cari percakapan…` · `Tidak ada percakapan yang cocok` | Chat history (GUI sidebar) · Search conversations… · No matching conversation |
+| `Ganti nama` · `Hapus` | Rename · Delete (GUI sidebar) |
+| `Lampirkan file` · `Lampiran dari user (baca dengan tool Read)` | Attach a file · Attachments from the user (read them with the Read tool) |
+| `Claude selesai` · `Claude minta izin` | Claude is done · Claude asks for permission (GUI notifications) |
+| `Versi baru claude-code-mini tersedia. Update dengan: claude-code-mini --update` | A new version is out; update with `claude-code-mini --update` |
 | `clipboard tidak tersedia di sini, blok teks di bawah ini dengan mouse` | No clipboard here; select the text below with the mouse |
 
 ## Update and uninstall
 
-Installed with the installer? To update, run the [same one-line command](#install-in-one-command) again.
+To update to the newest version, run:
 
-Installed by hand? Run these in the folder you cloned to update the script and its libraries. On macOS and Linux:
+```bash
+claude-code-mini --update
+```
+
+It downloads the latest `claude-code-mini.py` from GitHub into the install folder, then updates the libraries
+(including the Claude Code engine) as `--setup` does. On Windows, close the other claude-code-mini windows first.
+You don't have to remember to check: about twice a day the app looks at GitHub in the background, and when a newer
+version is out it says so when it starts (`⬆ Versi baru claude-code-mini tersedia. Update dengan:  claude-code-mini
+--update`) and in a strip at the top of the GUI, with a button that copies the command. Set
+`CCMINI_NO_UPDATE_CHECK=1` to turn the check off.
+
+Running the [installer command](#install-in-one-command) again works too.
+
+Installed by hand from a clone? `--update` updates the installed command but not your clone. To keep both in step,
+run these in the folder you cloned instead. On macOS and Linux:
 
 ```bash
 git pull && python3 claude-code-mini.py --setup

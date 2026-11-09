@@ -398,4 +398,60 @@ if old_tmux is not None:
     os.environ["TMUX"] = old_tmux
 print("\nFAILS (copy additions):", fails or "none")
 
+# ============ U) update, lampiran GUI, streaming GUI ============
+import json as _json
+import tempfile
+from claude_agent_sdk.types import StreamEvent
+check("U1 blob_sha sama dengan git hash-object", ng.blob_sha(b"hello\n") == "ce013625030ba8dba906f756967f9e9ca394464a")
+check("U2 akhir baris CRLF dianggap LF", ng.blob_sha(b"a\r\nb\n") == ng.blob_sha(b"a\nb\n"))
+tmpd = Path(tempfile.mkdtemp())
+ng.UPDATE_FILE = tmpd / "update-check.json"
+saved_env = {k: os.environ.pop(k, None) for k in ("CCMINI_LAUNCHER", "CCMINI_NO_UPDATE_CHECK",
+                                                  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")}
+os.environ["CCMINI_LAUNCHER"] = "1"
+here_sha = ng.blob_sha(Path(ng.__file__).read_bytes())
+ng.UPDATE_FILE.write_text(_json.dumps({"checked": time.time(), "remote": "0" * 40}))
+check("U3 versi di GitHub beda -> pemberitahuan --update", "--update" in (ng.update_notice() or ""))
+ng.UPDATE_FILE.write_text(_json.dumps({"checked": time.time(), "remote": here_sha}))
+check("U4 versi sama -> tanpa pemberitahuan", ng.update_notice() is None)
+check("U5 sudah dicek dalam 12 jam: pakai cache, tanpa jaringan", ng.check_for_update() == here_sha)
+os.environ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+check("U6 cek versi mati di CI/tes", ng.update_notice() is None and ng.check_for_update() is None)
+for k, v in saved_env.items():
+    os.environ.pop(k, None)
+    if v is not None:
+        os.environ[k] = v
+ng.UPLOAD_DIR = tmpd / "uploads"
+r = ng.save_upload("../../etc/pa ss<wd>.png", "data:image/png;base64,aGVsbG8=")
+check("U7 lampiran: nama aman, tetap di folder uploads, gambar dikenali", r.get("ok") and r["image"]
+      and Path(r["path"]).parent.parent == ng.UPLOAD_DIR and Path(r["path"]).read_bytes() == b"hello"
+      and "/" not in r["name"] and ".." not in r["name"], repr(r))
+old_max = ng.UPLOAD_MAX; ng.UPLOAD_MAX = 3
+r = ng.save_upload("a.txt", "aGVsbG8=")
+ng.UPLOAD_MAX = old_max
+check("U8 lampiran terlalu besar ditolak", not r.get("ok") and "terlalu besar" in r.get("error", ""), repr(r))
+class FakeHub:
+    def __init__(self):
+        self.events = []
+    def emit(self, kind, data=None):
+        self.events.append((kind, data or {}))
+hub = FakeHub()
+wargs = argparse.Namespace(mode="acceptEdits", model="claude-haiku-5-5", budget=None, effort=None, print=None, buffer_mb=64,
+                           cont=False, resume=None)
+wui = ng.WebUI(Path("."), wargs, hub)
+def sev(event, parent=None):
+    return StreamEvent(uuid="u", session_id=S, event=event, parent_tool_use_id=parent)
+wui.render(sev({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}))
+wui.render(sev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hal"}}))
+wui.render(sev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "o **dunia**"}}))
+wui.render(sev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "x"}}, parent="tool1"))
+wui.render(sev({"type": "content_block_stop", "index": 0}))
+drafts = [d["html"] for k, d in hub.events if k == "draft"]
+check("U9 streaming: draf dikirim bertahap, yang terakhir teks lengkap (Markdown), sub-agent diabaikan",
+      len(drafts) >= 2 and "Halo <strong>dunia</strong>" in drafts[-1] and "x" not in drafts[-1], repr(drafts))
+real_hub = ng.WebHub()
+real_hub._push({"type": "draft", "html": "a"}); real_hub._push({"type": "user", "text": "b"})
+check("U10 draf tidak masuk riwayat replay (tab baru)", [e["type"] for e in real_hub.log] == ["user"])
+print("\nFAILS (update/upload/stream additions):", fails or "none")
+
 sys.exit(1 if fails else 0)
