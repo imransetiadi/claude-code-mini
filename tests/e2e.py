@@ -14,6 +14,7 @@ Env:
 Aplikasi dijalankan dengan HOME (Windows: USERPROFILE) di dalam folder log, jadi riwayat ketikan dan percakapan
 asli tidak tersentuh.
 """
+import base64
 import json
 import os
 import re
@@ -77,6 +78,7 @@ def env(isolate=True, **extra):
     e = dict(os.environ)
     e.update(ANTHROPIC_API_KEY="sk-ant-fake-test-key", ANTHROPIC_BASE_URL=f"http://127.0.0.1:{PORT}",
              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", CCMINI_NO_CAFFEINATE="1", TERM="xterm-256color",
+             CCMINI_CLIPBOARD="osc52",  # /copy tidak menyentuh clipboard asli komputer; hasilnya dibaca dari log PTY
              PYTHONIOENCODING="")
     e.pop("PYTHONIOENCODING")
     if isolate:
@@ -282,6 +284,26 @@ def test_interactive():
         t.wait(r"✓ Selesai", after=n, timeout=90)
         check("I9 @file dilampirkan", t.count(r"Melampirkan @halo\.py") >= 1 and t.count("ok-file") >= 2,
               t.screen_text()[-400:])
+
+        # /copy: label "📋 /copy N" di bawah blok kode; /copy N -> OSC 52 ke terminal + teks polos untuk diblok mouse
+        n = t.count(r"✓ Selesai")
+        t.type("[[say:Jalankan:\\n```bash\\necho salin-ini\\n```]]")
+        t.key("Enter")
+        t.wait(r"✓ Selesai", after=n, timeout=90)
+        label = re.search(r"📋 /copy (\d+)", t.history())
+        time.sleep(0.5)
+        t.type(f"/copy {label.group(1) if label else 1}")
+        t.key("Enter")
+        try:
+            t.wait(r"dikirim ke clipboard lewat terminal", timeout=20)
+            t.wait(r"(?m)^echo salin-ini$", timeout=10)  # teks polos tanpa bingkai/padding blok kode
+            raw = (OUT / "tui.raw").read_text(encoding="utf-8", errors="replace")
+            osc = "\x1b]52;c;" + base64.b64encode(b"echo salin-ini").decode() in raw
+            # ConPTY di Windows bisa menelan OSC 52; di sana cukup pesan + teks polosnya
+            check("I13 /copy N: label di bawah blok kode, OSC 52 + teks polos", label is not None and (osc or WIN),
+                  f"label={bool(label)} osc={osc}")
+        except TimeoutError as e:
+            check("I13 /copy N: label di bawah blok kode, OSC 52 + teks polos", False, str(e)[-500:])
 
         # Shift+Tab mengganti mode izin, Ctrl+C sekali di prompt kosong = peringatan
         time.sleep(1.0)

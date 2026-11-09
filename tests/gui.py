@@ -137,6 +137,8 @@ def test_flow(g):
     g.turn_done(m)
     check("G3 pesan -> kartu tool + hasil + jawaban", "halo-gui" in res["summary"] and tool["name"] in ("Bash", "PowerShell"),
           json.dumps(res)[:300])
+    check("G3b kartu command membawa command lengkap untuk tombol salin", tool.get("copy") == "echo halo-gui",
+          json.dumps(tool)[:300])
 
     # izin: ya
     m = g.mark()
@@ -229,6 +231,36 @@ def test_flow(g):
     cost_after = [e for e in g.events if e["type"] == "status"][-1]["cost"]
     check("G10b /resume tidak menambah biaya (biaya lama yang dipulihkan mesin bukan pengeluaran baru)",
           cost_after == cost_before and "0 langkah" not in g.logs(m), f"{cost_before} -> {cost_after}")
+
+    # menyalin: blok kode bernomor (tombol salin, /copy N di browser) + teks asli jawaban (/copy)
+    m = g.mark()
+    g.api("send", {"text": "[[say:Pakai:\\n```bash\\necho gui-salin\\n```]]"})
+    ans = g.wait(lambda e: e["type"] == "assistant" and "gui-salin" in e["html"], 60, m)
+    g.turn_done(m)
+    check("G13 jawaban: blok kode bernomor untuk tombol salin + teks asli Markdown",
+          re.search(r'<pre data-copy="\d+"><code', ans["html"]) is not None and "```bash" in ans.get("text", ""),
+          json.dumps(ans)[:300])
+
+    # sidebar riwayat: percakapan baru muncul paling atas dan ditandai; /resume ID (klik di sidebar) langsung pindah
+    first = [e for e in g.events if e["type"] == "status"][-1].get("session")
+    m = g.mark()
+    g.api("send", {"text": "/clear"})
+    g.wait(lambda e: e["type"] == "log" and "Percakapan baru dimulai" in e["html"], 60, m)
+    m = g.mark()
+    g.api("send", {"text": "percakapan kedua [[say:jawaban-kedua]]"})
+    g.wait(is_type("assistant", html="jawaban-kedua"), 60, m)
+    g.turn_done(m)
+    r = g.api("sessions", {})
+    items, cur = r.get("items", []), r.get("current")
+    ids = [it.get("id") for it in items]
+    check("G14a daftar riwayat: percakapan baru paling atas dan ditandai, yang lama tetap ada",
+          len(items) >= 2 and ids[0] == cur and first in ids and all(it.get("title") and it.get("when") for it in items),
+          json.dumps(r)[:400])
+    m = g.mark()
+    g.api("send", {"text": f"/resume {first}"})
+    g.wait(lambda e: e["type"] == "log" and "Percakapan lama dilanjutkan" in e["html"], 60, m)
+    g.wait(lambda e: e["type"] == "status" and e.get("session") == first, 60, m)
+    check("G14b /resume ID (klik di sidebar) langsung pindah ke percakapan itu", True)
 
     # /exit -> browser diberi tahu, proses selesai
     m = g.mark()

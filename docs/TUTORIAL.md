@@ -431,8 +431,15 @@ Isinya sama dengan versi terminal, hanya tampilannya berbeda:
 - **Saat Claude bekerja.** Di atas kolom pesan tampil status kerja (seperti spinner di terminal) dengan tombol
   **■ Stop**. Kolom pesan tetap bisa dipakai, dengan aturan yang sama seperti bagian 7.4: pesan biasa dibaca Claude
   setelah langkah yang sedang jalan, `/perintah` dan `!command` antre, dan antreannya tampil di atas kolom pesan.
+- **Tombol salin.** Tiap blok kode di jawaban Claude punya tombol salin di pojok kanan atas (tooltip
+  `Salin kode · /copy 2`), tiap jawaban punya satu di bawahnya (`Salin jawaban`), dan kartu command (`Bash`)
+  menampilkannya saat kursor diarahkan ke kartu itu. Kode yang disalin tanpa Enter di akhir, jadi tidak langsung jalan
+  saat ditempel di terminal. `/copy` dan `/copy 2` di kolom pesan juga bisa (bagian 7.5).
+- **Sidebar riwayat obrolan.** Di kiri: percakapan di folder proyek ini, terbaru di atas, yang sedang dibuka
+  ditandai. Klik salah satunya untuk melanjutkan, **+ Baru** untuk percakapan baru. Di jendela sempit, sidebar
+  muncul menutupi halaman.
 - **Bawah.** Pilihan mode izin dan model, pemakaian konteks, biaya, goal, dan tugas background.
-- **Atas.** Tombol **Baru** (`/clear`), **Riwayat** (`/resume`, pilih percakapan lama dari daftar), **Rewind**,
+- **Atas.** Tombol **Baru** (`/clear`), **Riwayat** (tampilkan/sembunyikan sidebar riwayat), **Rewind**,
   **Bantuan**, dan **Keluar**.
 
 | Tombol keyboard | Fungsi |
@@ -696,6 +703,26 @@ muncul di atas prompt dan ketikanmu kembali setelah dijawab, begitu juga saat an
 giliran; kalau ada pesan susulan yang belum terbaca, Claude langsung mengerjakan pesan itu
 (`⏹ Dihentikan oleh user · lanjut ke pesan susulan`). Ctrl+D saat Claude bekerja bertanya dulu, karena keluar
 akan menghentikan giliran.
+
+### 7.5 Menyalin jawaban dan perintah (`/copy`)
+
+Memblok command di terminal dengan mouse sering ikut membawa spasi tepi dan potongan baris dari layar. Karena itu
+tiap blok kode di jawaban Claude diberi nomor, yang tertulis samar di bawahnya:
+
+```text
+ python3 -m unittest -v
+  📋 /copy 2
+```
+
+- `/copy 2` menyalin blok kode nomor 2, persis seperti yang ditulis Claude.
+- `/copy` menyalin seluruh jawaban terakhir Claude (Markdown).
+
+Keduanya bisa dipakai walaupun Claude sedang bekerja, dan nomornya tetap sama selama sesi, juga sesudah `/clear`.
+Di komputer sendiri, teksnya langsung masuk clipboard (`✓ Blok kode 2 disalin ke clipboard`): lewat `pbcopy` di
+macOS, clipboard Windows, atau `wl-copy`, `xclip`, `xsel` di Linux. Lewat SSH, teksnya dikirim ke terminalmu
+dengan escape OSC 52, yang diubah jadi salinan oleh banyak terminal (misalnya Windows Terminal, kitty, WezTerm, dan
+iTerm2 kalau akses clipboard diizinkan di pengaturannya). Hasilnya tidak bisa dipastikan, jadi teksnya juga dicetak
+polos di antara dua garis, siap diblok dengan mouse. Di GUI, pakai tombol salin atau ketik `/copy` di kolom pesan.
 
 ## 8. Mengendalikan Claude saat bekerja
 
@@ -1165,7 +1192,8 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `/tasks` / `/tasks <no>` / `/tasks log` | daftar tugas background / detail / log on-off |
 | `/stop <no>` / `/stop all` | hentikan tugas background (alias `/kill`) |
 | `/goal [kondisi]` / `/goal clear` | set goal atau lihat status / batalkan goal |
-| `/resume` | lanjutkan percakapan lama di folder ini |
+| `/copy` / `/copy N` | salin jawaban terakhir Claude / blok kode nomor N (bagian 7.5) |
+| `/resume` / `/resume ID` | lanjutkan percakapan lama di folder ini / langsung ke percakapan ID itu |
 | `/rewind` | kembalikan file ke kondisi sebelum prompt tertentu |
 | `/clear` | mulai percakapan baru |
 | `/exit` (atau `/quit`) | keluar |

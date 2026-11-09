@@ -2,7 +2,7 @@
 
 Mesin Claude Code yang asli diarahkan ke sini lewat ANTHROPIC_BASE_URL. Skenario dipicu penanda di teks user
 (penanda TERAKHIR yang dipakai, jadi pesan susulan di tengah giliran langsung mengambil alih):
-  [[say:TEKS]]       jawab TEKS
+  [[say:TEKS]]       jawab TEKS (\n di TEKS = baris baru)
   [[sh:CMD]]         1x tool shell (Bash kalau ada, kalau tidak PowerShell) dengan CMD, lalu jawab "SELESAI"
   [[ps:CMD]]         sama, tapi memakai tool PowerShell kalau tersedia
   [[sleep:N:K]]      K x tool shell "sleep N" (PowerShell: Start-Sleep -Seconds N), lalu jawab "SELESAI"
@@ -89,7 +89,7 @@ def decide(body):
     done = sum(len(tool_uses_of(m)) for m in msgs[where + 1:] if m.get("role") == "assistant")
     shell = "Bash" if "Bash" in tools else ("PowerShell" if "PowerShell" in tools else None)
     if kind == "say":
-        return ("text", arg)
+        return ("text", arg.replace("\\n", "\n"))  # \n = baris baru (mis. untuk blok kode)
     if kind in ("sh", "ps"):
         tool = "PowerShell" if kind == "ps" and "PowerShell" in tools else shell
         if done == 0 and tool:

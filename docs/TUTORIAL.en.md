@@ -444,9 +444,16 @@ terminal; only the presentation differs:
 - **While Claude works.** A working status (the terminal's spinner) appears above the message box, with a
   **■ Stop** button. The message box stays usable, with the same rules as section 7.4: plain messages are read
   after the current step, `/commands` and `!command` queue, and the queue is shown above the message box.
+- **Copy buttons.** Every code block in Claude's answers has a copy button in its top-right corner (tooltip
+  `Salin kode · /copy 2`, "copy code"), every answer has one underneath (`Salin jawaban`, "copy answer"), and a
+  command card (`Bash`) shows one when you point at it. Copied code has no Enter at the end, so it doesn't run as
+  soon as you paste it into a terminal. Typing `/copy` or `/copy 2` in the message box works too (section 7.5).
+- **History sidebar** (`Riwayat obrolan`, "chat history"). On the left: the conversations in the project folder,
+  newest first, with the open one marked. Click one to continue it, or **+ Baru** for a new one. In a narrow window
+  the sidebar opens over the page.
 - **Bottom bar.** Permission mode and model selectors, context usage, cost, goal, and background tasks.
-- **Top bar.** **Baru** ("new", `/clear`), **Riwayat** ("history", `/resume`: pick an older conversation from a
-  list), **Rewind**, **Bantuan** ("help") and **Keluar** ("quit").
+- **Top bar.** **Baru** ("new", `/clear`), **Riwayat** ("history": show or hide the history sidebar), **Rewind**,
+  **Bantuan** ("help") and **Keluar** ("quit").
 
 | Key | What it does |
 |---|---|
@@ -720,6 +727,27 @@ appear above the prompt and your draft comes back once you have answered, and th
 processed. Esc stops the turn; if a follow-up message is still unread, Claude goes straight on to it
 (`⏹ Dihentikan oleh user · lanjut ke pesan susulan`). Ctrl+D while Claude works asks first, because quitting
 would stop the turn.
+
+### 7.5 Copying answers and commands (`/copy`)
+
+Selecting a command in the terminal with the mouse often picks up the padding and broken lines of the screen. So
+every code block in Claude's answers gets a number, shown dimly under it:
+
+```text
+ python3 -m unittest -v
+  📋 /copy 2
+```
+
+- `/copy 2` copies code block 2, exactly as Claude wrote it.
+- `/copy` copies Claude's whole last answer (as Markdown).
+
+Both work while Claude is still working, and the numbers stay the same for the whole session, even after `/clear`.
+On your own computer the text goes straight to the clipboard (`✓ Blok kode 2 disalin ke clipboard`, "code block 2
+copied to the clipboard"): through `pbcopy` on macOS, the Windows clipboard, or `wl-copy`, `xclip` or `xsel` on
+Linux. Over SSH it is sent to your terminal as an OSC 52 escape sequence, which many terminals turn into a copy (for
+example Windows Terminal, kitty, WezTerm, and iTerm2 once clipboard access is allowed in its settings). Whether that
+worked can't be checked, so the text is then also printed plainly between two lines, ready to select with the mouse.
+In the GUI, use the copy buttons or type `/copy` in the message box.
 
 ## 8. Controlling Claude while it works
 
@@ -1199,7 +1227,8 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `/tasks` / `/tasks <no>` / `/tasks log` | list background tasks / details / log on-off |
 | `/stop <no>` / `/stop all` | stop background tasks (alias `/kill`) |
 | `/goal [condition]` / `/goal clear` | set a goal or show its status / cancel the goal |
-| `/resume` | continue an older conversation in this folder |
+| `/copy` / `/copy N` | copy Claude's last answer / code block N (section 7.5) |
+| `/resume` / `/resume ID` | continue an older conversation in this folder / go straight to conversation ID |
 | `/rewind` | restore files to how they were before an earlier prompt |
 | `/clear` | start a new conversation |
 | `/exit` (or `/quit`) | quit |

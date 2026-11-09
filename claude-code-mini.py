@@ -541,7 +541,7 @@ if __name__ == "__main__":
 try:
     from rich.console import Console, Group
     from rich.live import Live
-    from rich.markdown import Markdown
+    from rich.markdown import CodeBlock, Markdown
     from rich.markup import escape as rich_escape
     from rich.padding import Padding
     from rich.panel import Panel
@@ -700,13 +700,14 @@ LOCAL_COMMANDS = {
     "/status": "info sesi: model, mode, folder, session id",
     "/cost": "total biaya sesi ini",
     "/context": "pemakaian context window",
+    "/copy": "salin jawaban terakhir Claude ( /copy 2 = blok kode nomor 2 )",
     "/model": "ganti model: opus, sonnet, haiku, fable, atau id lengkap",
     "/mode": "ganti mode izin (atau tekan Shift+Tab)",
     "/allow": "lihat tool yang diizinkan ( /allow reset = hapus izin sesi )",
     "/tasks": "pantau agent/command background ( /tasks 2 = detail & log, /tasks log = on/off log )",
     "/stop": "hentikan tugas background ( /stop 2, /stop all )",
     "/goal": "kerja terus sampai kondisi terpenuhi (/goal = status, clear = batal)",
-    "/resume": "lanjutkan percakapan lama di folder ini",
+    "/resume": "lanjutkan percakapan lama di folder ini ( /resume ID = langsung ke percakapan itu )",
     "/rewind": "kembalikan file ke kondisi sebelum prompt tertentu",
     "/clear": "mulai percakapan baru (konteks lama dibuang)",
     "/exit": "keluar",
@@ -722,10 +723,12 @@ SHORTCUTS_TEXT = """\
   [cyan]Esc[/] / [cyan]Ctrl+C[/]    hentikan Claude saat sedang bekerja (juga saat menanggapi tugas background)
   [cyan]Ctrl+C 2x[/] / [cyan]Ctrl+D[/]  keluar
   akhiri baris dengan [cyan]\\\\[/] atau [cyan]Alt+Enter[/]  pesan multi-baris (paste multi-baris otomatis jadi satu pesan)
+[bold]Salin:[/] [cyan]/copy[/] jawaban terakhir Claude · [cyan]/copy 2[/] blok kode nomor 2 (nomornya tertulis di bawah tiap
+  blok kode: 📋 /copy 2) · masuk clipboard; lewat SSH dikirim lewat terminal (OSC 52) dan teksnya juga ditampilkan
 [bold]Saat Claude bekerja:[/] kolom chat tetap bisa dipakai.
   [cyan]Enter[/]  pesan langsung dikirim; Claude membacanya begitu langkah (tool) yang sedang jalan selesai
   /perintah, !command, # catatan  antre sampai giliran selesai ([cyan]↑[/] di kolom kosong = ambil kembali)
-  /tasks /help /status /cost /stop /mode  langsung dijalankan
+  /tasks /help /status /cost /stop /mode /copy  langsung dijalankan
 [bold]Tugas background:[/] progres agent/command background tampil live di bawah prompt.
   [cyan]/tasks[/] daftar & progres · [cyan]/tasks 2[/] detail, log & output · [cyan]/stop 2[/] hentikan
 [bold]Goal:[/] [cyan]/goal[/] [dim]kondisi[/]   Claude kerja terus sampai pemeriksa menilai kondisinya terpenuhi · [cyan]/goal[/] status · [cyan]/goal clear[/] batal
@@ -742,7 +745,7 @@ GOAL_CLEAR_WORDS = {"clear", "stop", "off", "reset", "none", "cancel"}
 GOAL_CLEAR_ALIASES = {"batal", "hapus"}
 
 # Perintah lokal yang aman dijalankan saat Claude sedang bekerja (cuma membaca status / tidak menyentuh percakapan).
-IMMEDIATE_COMMANDS = {"/help", "/tasks", "/status", "/cost", "/allow", "/stop", "/mode"}
+IMMEDIATE_COMMANDS = {"/help", "/tasks", "/status", "/cost", "/allow", "/stop", "/mode", "/copy"}
 DRAIN = object()  # hasil khusus prompt: ditutup sementara untuk memproses antrean (bukan ketikan user)
 BUSY_HINT = "ketik pesan susulan… Enter = kirim (dibaca Claude setelah langkah ini) · Esc = hentikan"
 
@@ -762,6 +765,175 @@ def clip(s: str, width: int = 200) -> str:
 
 def oneline(s: str) -> str:
     return " ".join(s.split())
+
+
+# ---------------------------------------------------------------- menyalin jawaban Claude (/copy, tombol Salin di GUI)
+_MD_PARSER: Any = None
+
+
+def code_blocks(text: str) -> list[str]:
+    """Isi tiap blok kode (```fence``` maupun blok berindentasi) di jawaban Claude, sesuai urutannya."""
+    global _MD_PARSER
+    if _MD_PARSER is None:
+        from markdown_it import MarkdownIt
+
+        _MD_PARSER = MarkdownIt("commonmark").enable(["table", "strikethrough"])  # parser yang sama dengan rich
+    return [t.content.rstrip() for t in _MD_PARSER.parse(text) if t.type in ("fence", "code_block")]
+
+
+class _CopyCodeBlock(CodeBlock):
+    """Blok kode di jawaban Claude, dengan nomornya untuk /copy di bawahnya."""
+
+    copy_nums: dict[str, int] = {}
+
+    @classmethod
+    def create(cls, markdown: Any, token: Any) -> Any:
+        block = super().create(markdown, token)
+        block.copy_nums = getattr(markdown, "copy_nums", {})
+        return block
+
+    def __rich_console__(self, console: Any, options: Any) -> Any:
+        yield from super().__rich_console__(console, options)
+        n = self.copy_nums.get(str(self.text).rstrip())
+        if n:
+            yield Text(f"  📋 /copy {n}", style="dim")
+
+
+class CopyMarkdown(Markdown):
+    """Markdown jawaban Claude dengan label "📋 /copy N" di bawah tiap blok kode."""
+
+    elements = {**Markdown.elements, "fence": _CopyCodeBlock, "code_block": _CopyCodeBlock}
+
+    def __init__(self, text: str, copy_nums: dict[str, int]):
+        super().__init__(text)
+        self.copy_nums = copy_nums
+
+
+def osc52_sequence(text: str) -> str:
+    """Escape OSC 52: terminal menaruh teks di clipboard komputer tempat terminal itu jalan, juga lewat SSH.
+    Di tmux dikirim dua versi: lewat passthrough (allow-passthrough on) dan apa adanya (set-clipboard on)."""
+    seq = "\033]52;c;" + base64.b64encode(text.encode("utf-8")).decode("ascii") + "\a"
+    if os.environ.get("TMUX"):
+        return "\033Ptmux;" + seq.replace("\033", "\033\033") + "\033\\" + seq
+    return seq
+
+
+def _run_copy(cmd: list[str], text: str, env: dict[str, str] | None = None) -> bool:
+    try:  # stdout/stderr tidak di-pipe: xclip/xsel/wl-copy tetap jalan di background untuk melayani clipboard
+        return subprocess.run(cmd, input=text.encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=5, env={**os.environ, **(env or {})}).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _win_clipboard(text: str) -> bool:
+    """Clipboard Windows lewat Win32 API (CF_UNICODETEXT), tanpa program luar."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    data = text.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-16-le") + b"\0\0"
+    handle = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+    if not handle:
+        return False
+    ptr = kernel32.GlobalLock(handle)
+    if not ptr:
+        kernel32.GlobalFree(handle)
+        return False
+    ctypes.memmove(ptr, data, len(data))
+    kernel32.GlobalUnlock(handle)
+    for _ in range(10):  # clipboard bisa sedang dipegang program lain sebentar
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        kernel32.GlobalFree(handle)
+        return False
+    try:
+        user32.EmptyClipboard()
+        if not user32.SetClipboardData(13, handle):  # CF_UNICODETEXT; kalau berhasil, memorinya milik sistem
+            kernel32.GlobalFree(handle)
+            return False
+    finally:
+        user32.CloseClipboard()
+    return True
+
+
+def copy_to_clipboard(text: str) -> str | None:
+    """Salin teks ke clipboard; return cara yang dipakai, atau None kalau tidak ada cara yang bisa.
+    Di komputer sendiri: clipboard sistem. Lewat SSH (atau kalau itu tidak ada): OSC 52 ke terminal, yang hasilnya
+    tidak bisa dipastikan, jadi pemanggil juga menampilkan teksnya. CCMINI_CLIPBOARD=osc52 / none memaksa caranya."""
+    force = os.environ.get("CCMINI_CLIPBOARD", "").strip().lower()
+    remote = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
+    if not force and not remote:
+        if WINDOWS:
+            with contextlib.suppress(Exception):
+                if _win_clipboard(text):
+                    return "clipboard Windows"
+        elif sys.platform == "darwin":
+            if _run_copy(["pbcopy"], text, {"LANG": "en_US.UTF-8"}):
+                return "pbcopy"
+        else:
+            if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy") and _run_copy(["wl-copy"], text):
+                return "wl-copy"
+            if os.environ.get("DISPLAY"):
+                if shutil.which("xclip") and _run_copy(["xclip", "-selection", "clipboard"], text):
+                    return "xclip"
+                if shutil.which("xsel") and _run_copy(["xsel", "--clipboard", "--input"], text):
+                    return "xsel"
+    if force != "none" and is_terminal(sys.stdout):
+        with contextlib.suppress(Exception):
+            sys.stdout.write(osc52_sequence(text))
+            sys.stdout.flush()
+            return "OSC 52"
+    return None
+
+
+def copy_target(ui: Any, arg: str) -> tuple[str, str] | None:
+    """Teks untuk /copy: jawaban terakhir Claude, atau blok kode nomor N. Pesan salahnya dicetak di sini."""
+    arg = arg.strip()
+    if not arg:
+        if not ui.answers:
+            console.print("[yellow]Belum ada jawaban Claude untuk disalin.[/]")
+            return None
+        return ui.answers[-1].strip("\n"), "Jawaban terakhir Claude"
+    if arg.isdigit() and 1 <= int(arg) <= len(ui.code_blocks):
+        return ui.code_blocks[int(arg) - 1], f"Blok kode {int(arg)}"
+    have = f"1–{len(ui.code_blocks)}" if ui.code_blocks else "belum ada"
+    console.print(f"[yellow]Pakai /copy (jawaban terakhir) atau /copy N (blok kode nomor N; yang ada: {have}).[/]")
+    return None
+
+
+def copy_command(ui: Any, arg: str) -> None:
+    """/copy di terminal. Kalau cuma lewat OSC 52 (mis. di SSH) atau tidak ada clipboard sama sekali, teksnya juga
+    dicetak polos (tanpa bingkai dan tanpa potongan baris) supaya bisa diblok dengan mouse."""
+    target = copy_target(ui, arg)
+    if target is None:
+        return
+    text, what = target
+    size = f"{text.count(chr(10)) + 1} baris"
+    how = copy_to_clipboard(text)
+    if how and how != "OSC 52":
+        console.print(f"[green]✓ {what} disalin ke clipboard[/] [dim]({size} · {how})[/]")
+        return
+    if how:
+        console.print(f"[green]✓ {what} dikirim ke clipboard lewat terminal (OSC 52)[/] [dim]({size})[/]\n"
+                      "[dim]  Kalau tidak masuk (terminalnya belum mendukung OSC 52), blok teks di bawah ini dengan mouse:[/]")
+    else:
+        console.print(f"[yellow]📋 {what}: clipboard tidak tersedia di sini, blok teks di bawah ini dengan mouse:[/]")
+    console.rule(style="dim")
+    console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
+    console.rule(style="dim")
 
 
 def ago(ts: Any) -> str:
@@ -1433,6 +1605,9 @@ class UI:
         self.exit_code = 0
         self.perm_unanswerable = False  # izin ditolak otomatis karena tidak ada terminal (mis. -p di CI)
         self.exit_confirmed = False  # Ctrl+D saat Claude bekerja sudah dikonfirmasi (jangan tanya lagi di loop utama)
+        # untuk /copy: jawaban Claude terakhir dan semua blok kodenya (nomor urut sesi, tetap sama walau /clear)
+        self.answers: list[str] = []
+        self.code_blocks: list[str] = []
         self.begin_turn(None)
         self.reset()
         self.attach(None)
@@ -1994,11 +2169,26 @@ class UI:
             return "", None  # rencananya ditampilkan di panel persetujuan
         return clip(json.dumps(inp, ensure_ascii=False), 400 if full else 160), None
 
+    def remember_answer(self, text: str) -> list[tuple[str, int]]:
+        """Simpan jawaban Claude untuk /copy. Tiap blok kodenya mendapat nomor urut sesi; return (isi, nomor) per blok
+        sesuai urutannya (blok kosong: nomor 0; blok yang sama persis di satu jawaban memakai satu nomor)."""
+        self.answers.append(text)
+        del self.answers[:-50]
+        seen: dict[str, int] = {}
+        out = []
+        for code in code_blocks(text):
+            if code and code not in seen:
+                self.code_blocks.append(code)
+                seen[code] = len(self.code_blocks)
+            out.append((code, seen.get(code, 0)))
+        return out
+
     # ---------- tampilan pesan (versi GUI: WebUI) ----------
     def show_text(self, text: str) -> None:
-        """Jawaban Claude (markdown)."""
+        """Jawaban Claude (markdown). Blok kodenya diberi label "📋 /copy N"."""
+        nums = {code: n for code, n in self.remember_answer(text) if n}
         console.print()
-        console.print(Markdown(text))
+        console.print(CopyMarkdown(text, nums) if nums else Markdown(text))
         console.print()
 
     def show_thinking(self, text: str) -> None:
@@ -2983,6 +3173,20 @@ class UI:
 
 
 # ---------- daftar & riwayat sesi lama ----------
+def session_infos(repo: Path, limit: int = 40) -> list[Any]:
+    """Percakapan di folder ini (terbaru dulu), tanpa mencetak apa pun: [] kalau SDK terlalu lama atau gagal dibaca."""
+    if list_sessions is None:
+        return []
+    try:
+        return list(list_sessions(directory=str(repo), limit=limit))
+    except Exception:
+        return []
+
+
+def session_title(s: Any) -> str:
+    return oneline(s.custom_title or s.summary or s.first_prompt or "(tanpa judul)")
+
+
 def session_list(repo: Path, exclude: str | None = None) -> list[tuple[str, str]]:
     """Percakapan lama di folder ini: [(session id, keterangan satu baris)], terbaru dulu."""
     if list_sessions is None:
@@ -2997,9 +3201,8 @@ def session_list(repo: Path, exclude: str | None = None) -> list[tuple[str, str]
         console.print("[dim]Belum ada percakapan lama di folder ini.[/]")
     out = []
     for s in sessions:
-        title = oneline(s.custom_title or s.summary or s.first_prompt or "(tanpa judul)")
         branch = f"  ⎇ {s.git_branch}" if s.git_branch else ""
-        out.append((s.session_id, f"{ago(s.last_modified)} · {clip(title, 70)}{branch}"))
+        out.append((s.session_id, f"{ago(s.last_modified)} · {clip(session_title(s), 70)}{branch}"))
     return out
 
 
@@ -3391,6 +3594,13 @@ async def handle_command(cmd: str, client: ClaudeSDKClient, ui: UI) -> Any:
             f"  🎯 Goal         {goal_status_row(ui)}\n"
             f"  💰 Biaya        ${ui.cost_total:.4f}" + (f" / budget ${args.budget}" if args.budget else "")
         )
+    elif name == "/copy":
+        if getattr(ui, "gui", False):  # biasanya sudah ditangani browser; cadangan: browser yang menyalin
+            target = copy_target(ui, arg)
+            if target is not None:
+                ui.hub.emit("copy", {"text": target[0], "what": target[1]})
+        else:
+            copy_command(ui, arg)
     elif name == "/cost":
         console.print(f"Total biaya sesi ini: [bold]${ui.cost_total:.4f}[/]"
                       + (f" [dim](budget ${args.budget})[/]" if args.budget else ""))
@@ -3422,7 +3632,15 @@ async def handle_command(cmd: str, client: ClaudeSDKClient, ui: UI) -> Any:
             rules = settings_rules(ui.repo)
             console.print("[bold]Aturan tersimpan:[/] " + ("\n  " + "\n  ".join(rules) if rules else "(belum ada)"))
     elif name == "/resume":
-        if getattr(ui, "gui", False):
+        if arg:  # /resume <session id>: dari sidebar riwayat di GUI, atau diketik langsung
+            sid = arg
+            if sid == ui.session_id:
+                console.print("[dim]Percakapan itu sedang dibuka.[/]")
+                sid = None
+            elif sid not in {s.session_id for s in session_infos(ui.repo, 500)}:
+                console.print(f"[yellow]Percakapan {rich_escape(clip(sid, 60))} tidak ada di folder ini.[/]")
+                sid = None
+        elif getattr(ui, "gui", False):
             sid = await ui.pick_session(exclude=ui.session_id)
         else:
             sid = pick_session(ui.repo, exclude=ui.session_id)
@@ -3779,6 +3997,10 @@ GUI_SHORTCUTS_TEXT = """\
   [cyan]![/][dim]command[/], [cyan]@[/][dim]path[/], [cyan]#[/][dim] catatan[/], /perintah: sama seperti di terminal ([cyan]Tab[/] melengkapi / dan @)
   Saat Claude bekerja: pesan biasa dibaca Claude setelah langkah ini; /perintah, !command, # catatan antre
   (↑ di kolom kosong = pesan terakhir) · pertanyaan izin: klik tombolnya atau tekan 1/2/3
+[bold]Salin:[/] tombol salin di pojok blok kode, di jawaban Claude dan di kartu command (Bash) · atau ketik
+  [cyan]/copy[/] (jawaban terakhir) / [cyan]/copy 2[/] (blok kode nomor 2)
+[bold]Riwayat:[/] daftar percakapan di folder ini ada di sidebar kiri (tombol Riwayat menampilkan/menyembunyikannya);
+  klik salah satunya untuk melanjutkan · [cyan]+ Baru[/] = percakapan baru
 [bold]Tugas background:[/] progres tampil di bawah · [cyan]/tasks[/] detail & log · [cyan]/stop 2[/] hentikan
 [bold]Goal:[/] [cyan]/goal[/] [dim]kondisi[/] kerja terus sampai terpenuhi · [cyan]/goal[/] status · [cyan]/goal clear[/] batal
 """
@@ -3840,6 +4062,56 @@ main { flex: 1; overflow-y: auto; }
 .md th, .md td { border: 1px solid var(--border); padding: 4px 9px; }
 .md a { color: var(--link); }
 .md blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
+/* tombol salin: blok kode, jawaban Claude, command di kartu Bash */
+.codewrap { position: relative; }
+.codewrap > pre { padding-right: 48px; }
+.cpy { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; padding: 0; border-radius: 8px; color: var(--muted); background: var(--raised); }
+.cpy svg { width: 16px; height: 16px; }
+.cpy:hover:not(:disabled) { color: var(--text); }
+.cpy.ok { color: var(--ok); } .cpy.fail { color: var(--err); }
+.cpy:hover::after, .cpy:focus-visible::after, .cpy.ok::after, .cpy.fail::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 5; white-space: nowrap;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 2px 9px;
+  font: 13px/1.6 var(--sans); box-shadow: 0 2px 8px rgba(0,0,0,.18); pointer-events: none; }
+.codewrap > .cpy { position: absolute; top: 7px; right: 7px; }
+.reply { display: flex; flex-direction: column; gap: 4px; }
+.reply .acts { display: flex; gap: 6px; opacity: .5; transition: opacity .15s; }
+.reply:hover .acts, .reply .acts:focus-within { opacity: 1; }
+.reply .acts .cpy { width: 26px; height: 26px; border-color: transparent; background: none; }
+.reply .acts .cpy:hover { border-color: var(--border); background: var(--raised); }
+.reply .acts .cpy::after { right: auto; left: 0; }
+.tool .head .cpy { margin-left: auto; align-self: center; width: 26px; height: 26px; opacity: 0; }
+.tool:hover .head .cpy, .tool .head .cpy:focus-visible, .tool .head .cpy.ok { opacity: 1; }
+.tool .head .cpy::after { bottom: auto; top: 50%; right: calc(100% + 6px); transform: translateY(-50%); }
+@media (hover: none) { .tool .head .cpy, .reply .acts { opacity: 1; } }
+.toast { position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 50; pointer-events: none;
+  background: var(--text); color: var(--bg); padding: 6px 14px; border-radius: 8px; font-size: 13px;
+  opacity: 0; transition: opacity .2s; }
+.toast.on { opacity: .94; }
+/* sidebar riwayat obrolan */
+#body { flex: 1; display: flex; min-height: 0; }
+#pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#side { display: none; width: 264px; flex: none; flex-direction: column; min-height: 0; background: var(--panel);
+  border-right: 1px solid var(--border); }
+body.side-open #side { display: flex; }
+.side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 6px;
+  font-size: 13px; font-weight: 600; color: var(--muted); }
+.side-head button { font-size: 12.5px; padding: 3px 9px; }
+#sessions { flex: 1; overflow-y: auto; padding: 2px 8px 14px; display: flex; flex-direction: column; gap: 1px; }
+.sess { display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%; text-align: left;
+  border: 1px solid transparent; background: none; border-radius: 8px; padding: 6px 10px; }
+.sess:hover:not(:disabled) { background: var(--user); border-color: transparent; }
+.sess.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.sess.on .t { font-weight: 600; }
+.sess .t { font-size: 14px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess .w { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess-empty { color: var(--faint); font-size: 13px; padding: 8px 10px; }
+#histbtn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+@media (max-width: 859px) {
+  body.side-open #side { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; width: min(300px, 86vw);
+    box-shadow: 0 0 28px rgba(0,0,0,.28); }
+}
 details.thinking { color: var(--muted); font-style: italic; font-size: 14px; }
 details.thinking summary { cursor: pointer; }
 details.thinking div { white-space: pre-wrap; padding: 4px 0 0 18px; }
@@ -3913,13 +4185,21 @@ footer select.yolo { color: var(--err); font-weight: 600; }
   <div class="repo" id="repo"></div>
   <div class="actions">
     <button data-cmd="/clear" title="Mulai percakapan baru (konteks lama dibuang)">Baru</button>
-    <button data-cmd="/resume" title="Lanjutkan percakapan lama di folder ini">Riwayat</button>
+    <button id="histbtn" title="Riwayat obrolan di folder ini (tampilkan/sembunyikan)" aria-controls="side" aria-pressed="false">Riwayat</button>
     <button data-cmd="/rewind" title="Kembalikan file ke kondisi sebelum prompt tertentu">Rewind</button>
     <button data-cmd="/help">Bantuan</button>
     <button data-cmd="/exit" class="danger" title="Tutup claude-code-mini (percakapan tetap tersimpan)">Keluar</button>
   </div>
 </header>
 <div id="banner" class="banner" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="body">
+<aside id="side" aria-label="Riwayat obrolan">
+  <div class="side-head"><span>Riwayat obrolan</span>
+    <button id="sidenew" title="Mulai percakapan baru (konteks lama dibuang)">+ Baru</button></div>
+  <nav id="sessions"></nav>
+</aside>
+<div id="pane">
 <main id="main"><div id="chat"></div></main>
 <div id="dock"><div class="inner">
   <div id="working" hidden aria-live="polite"><div class="spin"></div><div class="txt" id="workingText"></div>
@@ -3937,6 +4217,8 @@ footer select.yolo { color: var(--err); font-weight: 600; }
     <span id="conn">menyambung…</span>
   </footer>
 </div></div>
+</div>
+</div>
 <script>
 (() => {
 "use strict";
@@ -3979,6 +4261,87 @@ function emptyState() {
   return d;
 }
 function links(root) { root.querySelectorAll("a[href]").forEach(a => { a.target = "_blank"; a.rel = "noopener noreferrer"; }); }
+
+// ---------- menyalin: tombol salin + /copy ----------
+const ICON_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15h-.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/></svg>';
+const ICON_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+const answers = [];  // teks asli (Markdown) jawaban Claude, untuk "/copy"
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (e) {  // tanpa Clipboard API: textarea tersembunyi + execCommand
+    const ta = mk("textarea"); ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+function copyBtn(tip, getText) {
+  const b = mk("button", "cpy"); b.type = "button"; b.innerHTML = ICON_COPY;
+  b.dataset.tip = tip; b.setAttribute("aria-label", tip);
+  b.onclick = async (e) => {
+    e.stopPropagation();
+    const ok = await copyText(getText());
+    b.innerHTML = ok ? ICON_OK : ICON_COPY; b.classList.toggle("ok", ok); b.classList.toggle("fail", !ok);
+    b.dataset.tip = ok ? "Disalin" : "Gagal menyalin";
+    clearTimeout(b._t);
+    b._t = setTimeout(() => { b.innerHTML = ICON_COPY; b.classList.remove("ok", "fail"); b.dataset.tip = tip; }, 1600);
+  };
+  return b;
+}
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.add("on");
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("on"), 1800);
+}
+function codeText(pre) { return pre.textContent.replace(/\n$/, ""); }  // tanpa Enter di akhir: aman ditempel di terminal
+function copyCmd(text) {  // "/copy" / "/copy N" diketik di kolom pesan: disalin di browser, tidak dikirim ke Claude
+  const m = text.match(/^\/copy(?:\s+(\S+))?$/i);
+  if (!m) return false;
+  let what = "Jawaban terakhir Claude", val = answers[answers.length - 1];
+  if (m[1]) {
+    const pre = /^\d+$/.test(m[1]) ? chat.querySelector('pre[data-copy="' + m[1] + '"]') : null;
+    what = "Blok kode " + m[1]; val = pre ? codeText(pre) : undefined;
+  }
+  if (val === undefined) toast(m[1] ? "Blok kode " + m[1] + " tidak ada (lihat nomor di tombol salin tiap blok kode)" : "Belum ada jawaban Claude untuk disalin");
+  else copyText(val).then(ok => toast(ok ? "✓ " + what + " disalin" : "Gagal menyalin: pakai tombol salin di blok kodenya"));
+  return true;
+}
+
+// ---------- sidebar riwayat obrolan ----------
+let sessTimer = null, sessCurrent = "";
+const sideWide = () => window.matchMedia("(min-width: 860px)").matches;
+const sideOpen = () => document.body.classList.contains("side-open");
+function setSide(open, remember) {
+  document.body.classList.toggle("side-open", open);
+  $("histbtn").setAttribute("aria-pressed", open ? "true" : "false");
+  if (remember) { try { localStorage.setItem("ccmini.side", open ? "1" : "0"); } catch (e) { /* tanpa storage */ } }
+  if (open) loadSessions();
+}
+async function loadSessions() {
+  if (!sideOpen()) return;
+  const r = await post("sessions");
+  if (!r || !Array.isArray(r.items)) return;
+  sessCurrent = r.current || "";
+  const nav = $("sessions");
+  nav.textContent = "";
+  if (!r.items.length) { nav.appendChild(mk("div", "sess-empty", "Belum ada percakapan di folder ini.")); return; }
+  r.items.forEach(it => {
+    const b = mk("button", "sess" + (it.id === sessCurrent ? " on" : ""));
+    b.type = "button"; b.title = it.title;
+    b.appendChild(mk("span", "t", it.title));
+    b.appendChild(mk("span", "w", it.when + (it.branch ? " · ⎇ " + it.branch : "")));
+    if (it.id === sessCurrent) b.setAttribute("aria-current", "true");
+    b.onclick = () => {
+      if (it.id === sessCurrent || !guard("/resume")) return;
+      post("send", { text: "/resume " + it.id });
+      if (!sideWide()) setSide(false, false);
+    };
+    nav.appendChild(b);
+  });
+}
+function refreshSessions() { clearTimeout(sessTimer); sessTimer = setTimeout(loadSessions, 300); }
 function banner(text, kind) {
   const b = $("banner");
   b.hidden = !text; b.textContent = text || ""; b.className = "banner" + (kind ? " " + kind : "");
@@ -3991,7 +4354,25 @@ function title() {
 // ---------- event dari claude-code-mini ----------
 const H = {
   user(ev) { add(mk("div", "user", ev.text)); },
-  assistant(ev) { const d = mk("div", "md"); d.innerHTML = ev.html; links(d); add(d); },
+  assistant(ev) {
+    const box = mk("div", "reply"), d = mk("div", "md");
+    d.innerHTML = ev.html; links(d);
+    d.querySelectorAll("pre").forEach(pre => {
+      const wrap = mk("div", "codewrap");
+      pre.replaceWith(wrap); wrap.appendChild(pre);
+      const n = pre.dataset.copy;
+      wrap.appendChild(copyBtn(n ? "Salin kode · /copy " + n : "Salin kode", () => codeText(pre)));
+    });
+    box.appendChild(d);
+    if (ev.text) {
+      answers.push(ev.text);
+      const acts = mk("div", "acts");
+      acts.appendChild(copyBtn("Salin jawaban · /copy", () => ev.text));
+      box.appendChild(acts);
+    }
+    add(box);
+  },
+  copy(ev) { copyText(ev.text).then(ok => toast(ok ? "✓ " + ev.what + " disalin" : "Gagal menyalin: pakai tombol salin di blok kodenya")); },
   thinking(ev) {
     const d = mk("details", "thinking");
     d.appendChild(mk("summary", null, "✻ Berpikir…"));
@@ -4004,6 +4385,7 @@ const H = {
     head.appendChild(mk("span", "dot", "●"));
     head.appendChild(mk("span", "name", ev.name));
     if (ev.summary) head.appendChild(mk("span", "sum", ev.summary));
+    if (ev.copy) head.appendChild(copyBtn("Salin command", () => ev.copy));
     card.appendChild(head);
     if (ev.detail) { const pre = mk("pre", "detail"); pre.innerHTML = ev.detail; card.appendChild(pre); }
     tools.set(ev.id, card);
@@ -4079,6 +4461,9 @@ const H = {
     title();
   },
   status(s) {
+    // daftar riwayat diperbarui saat percakapan berganti (/clear, lanjutkan) atau giliran selesai (judul & urutan)
+    if (s.session !== st.session || (st.busy && !s.busy)) refreshSessions();
+    st.session = s.session;
     st.busy = s.busy; st.asking = s.asking; st.tasks = s.tasks || []; st.mode = s.mode; st.model = s.model;
     $("working").hidden = !(s.busy || s.asking);
     $("workingText").textContent = s.working || (s.asking ? "Menunggu jawabanmu…" : "Claude bekerja…");
@@ -4173,6 +4558,7 @@ function guard(cmd) {
 function send() {
   const text = input.value.trim();
   if (!text || !guard(text)) return;
+  if (copyCmd(text)) { sent.push(text); histIdx = -1; input.value = ""; autosize(); hideSugg(); return; }
   post("send", { text });
   sent.push(text); histIdx = -1;
   input.value = ""; autosize(); hideSugg();
@@ -4280,6 +4666,21 @@ document.addEventListener("keydown", (e) => {
   if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) input.focus();
 });
 
+$("histbtn").onclick = () => setSide(!sideOpen(), true);
+$("sidenew").onclick = () => {
+  if (!guard("/clear")) return;
+  post("send", { text: "/clear" });
+  if (!sideWide()) setSide(false, false);
+};
+document.addEventListener("click", (e) => {  // layar sempit: sidebar menutupi halaman, klik di luarnya = tutup
+  if (sideOpen() && !sideWide() && !$("side").contains(e.target) && e.target !== $("histbtn")) setSide(false, false);
+});
+{
+  let saved = null;
+  try { saved = localStorage.getItem("ccmini.side"); } catch (e) { /* tanpa storage */ }
+  setSide(sideWide() && saved !== "0", false);
+}
+
 chat.appendChild(emptyState());
 autosize();
 connect();
@@ -4343,14 +4744,24 @@ def rich_html(renderable: Any, width: int = GUI_WIDTH) -> str:
     return segments_html(c.render(renderable, c.options.update(width=width)))
 
 
-def md_html(text: str) -> str:
-    """Markdown jawaban Claude -> HTML. HTML mentah di teksnya di-escape (tidak dijalankan browser)."""
+def md_html(text: str, copy_nums: list[int] | None = None) -> str:
+    """Markdown jawaban Claude -> HTML. HTML mentah di teksnya di-escape (tidak dijalankan browser). copy_nums: nomor
+    /copy tiap blok kode sesuai urutannya (0 = tanpa nomor), ditaruh di <pre data-copy="N"> untuk tombol Salin."""
     global _MD
     if _MD is None:
         from markdown_it import MarkdownIt
 
         _MD = MarkdownIt("commonmark", {"html": False, "breaks": True}).enable(["table", "strikethrough"])
-    return _MD.render(text)
+    html = _MD.render(text)
+    if copy_nums:
+        nums = iter(copy_nums)  # isi blok kode di-escape, jadi "<pre><code" hanya muncul sebagai tag blok kode
+
+        def tag(m: re.Match) -> str:
+            n = next(nums, 0)
+            return f'<pre data-copy="{n}"><code' if n else m.group(0)
+
+        html = re.sub(r"<pre><code", tag, html)
+    return html
 
 
 class _NullFile(io.TextIOBase):
@@ -4513,7 +4924,8 @@ class WebUI(UI):
         pass
 
     def show_text(self, text: str) -> None:
-        self.hub.emit("assistant", {"html": md_html(text)})
+        nums = [n for _, n in self.remember_answer(text)]
+        self.hub.emit("assistant", {"html": md_html(text, nums), "text": text.strip("\n")})
 
     def show_thinking(self, text: str) -> None:
         self.hub.emit("thinking", {"text": clip(text, 20000)})
@@ -4523,8 +4935,10 @@ class WebUI(UI):
 
     def print_tool_use(self, block: ToolUseBlock, nested: bool) -> None:
         summary, detail = self.describe_tool(block.name, block.input or {})
+        cmd = (block.input or {}).get("command", "") if block.name in ("Bash", "PowerShell") else ""
         self.hub.emit("tool", {"id": block.id, "name": TOOL_LABEL.get(block.name, block.name), "summary": summary,
-                               "detail": rich_html(detail) if detail is not None else "", "nested": nested})
+                               "detail": rich_html(detail) if detail is not None else "", "nested": nested,
+                               "copy": cmd if isinstance(cmd, str) else ""})
 
     def print_tool_result(self, block: ToolResultBlock, nested: bool) -> None:
         name = self.tool_names.get(block.tool_use_id, "")
@@ -4679,6 +5093,11 @@ class WebUI(UI):
                     console.print(f"[red]✗ Gagal mengganti model: {e}[/]")
         elif action == "complete":
             return {"items": self.completions(str(body.get("text") or ""))}
+        elif action == "sessions":  # sidebar riwayat: percakapan di folder ini, terbaru dulu
+            infos = await asyncio.to_thread(session_infos, self.repo, 60)
+            return {"current": self.session_id or "", "items": [
+                {"id": s.session_id, "title": clip(session_title(s), 120), "when": ago(s.last_modified),
+                 "branch": s.git_branch or ""} for s in infos]}
         else:
             return {"ok": False, "error": "unknown action"}
         return {"ok": True}

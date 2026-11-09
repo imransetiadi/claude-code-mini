@@ -53,6 +53,10 @@ the tests again. Every part of the screen is explained in [Your first session](#
 - **`/goal`**: Claude keeps working until a condition you define is met (built on Claude Code's own `/goal`).
 - **Session control**: `/rewind` file changes, continue old conversations with `/resume` or `-c`, automatic
   reconnect after a crash.
+- **Copy answers and commands**: every code block in Claude's answers gets a number (`📋 /copy 2` in the terminal,
+  a copy button in the GUI). `/copy` copies the last answer and `/copy 2` that code block, also over SSH.
+- **Chat history in the GUI**: a sidebar on the left lists the conversations in the project folder; click one to
+  continue it.
 - **Input shortcuts**: `!command` runs a shell command and hands the output to Claude, `@path` attaches files or
   folders, `# note` saves a note to `CLAUDE.md`.
 - **Scriptable**: `-p` one-shot mode with meaningful exit codes for scripts and CI.
@@ -479,25 +483,27 @@ theme, and so do the screenshots below, which change with GitHub's theme.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/gui-permission-dark.png">
-  <img src="docs/images/gui-permission.png" width="100%" alt="The GUI asking for permission: the top bar with the folder and the buttons Baru, Riwayat, Rewind, Bantuan and Keluar; the message as a chat bubble; a Bash tool card; a permission card with the buttons 1 Ya, 2 Ya dan jangan tanya lagi, and 3 Tidak; above the message box, the status line with a Stop button; at the bottom, the Mode and Model selectors, the cost and the connection status.">
+  <img src="docs/images/gui-permission.png" width="100%" alt="The GUI asking for permission: the top bar with the folder and the buttons Baru, Riwayat, Rewind, Bantuan and Keluar; on the left the history sidebar 'Riwayat obrolan' with the conversation in this folder; the message as a chat bubble; a Bash tool card; a permission card with the buttons 1 Ya, 2 Ya dan jangan tanya lagi, and 3 Tidak; above the message box, the status line with a Stop button; at the bottom, the Mode and Model selectors, the cost and the connection status.">
 </picture>
 
 *The same first request in the GUI, waiting for permission.*
 
 1. **Top bar**: the project folder and five buttons: **Baru** ("new", a fresh conversation, like `/clear`),
-   **Riwayat** ("history", pick an older conversation, like `/resume`), **Rewind** (undo file changes), **Bantuan**
+   **Riwayat** ("history", shows or hides the history sidebar), **Rewind** (undo file changes), **Bantuan**
    ("help") and **Keluar** ("quit").
-2. **The conversation**: your messages are bubbles on the right, and each tool call is a card (here `Bash` with its
+2. **History sidebar** (`Riwayat obrolan`): the conversations in the project folder, newest first, with the open one
+   marked. Click one to continue it, or **+ Baru** to start a new one. In a narrow window it opens over the page.
+3. **The conversation**: your messages are bubbles on the right, and each tool call is a card (here `Bash` with its
    command).
-3. **Permission questions are cards with buttons.** Click one or press `1`, `2` or `3`. Choosing `3`
+4. **Permission questions are cards with buttons.** Click one or press `1`, `2` or `3`. Choosing `3`
    ("Tidak", "no") opens a field for what Claude should do instead. While a question waits, the tab title shows 🔐.
-4. **Above the message box**: what Claude is doing, for how long, and a **■ Stop** button (Esc does the same).
-5. **Bottom bar**: the permission mode and model selectors, the session cost (the context usage joins it after the
+5. **Above the message box**: what Claude is doing, for how long, and a **■ Stop** button (Esc does the same).
+6. **Bottom bar**: the permission mode and model selectors, the session cost (the context usage joins it after the
    first answer), and the connection status (`terhubung`, "connected").
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/gui-typing-dark.png">
-  <img src="docs/images/gui-typing.png" width="100%" alt="The GUI while Claude works on the second request: tool cards with a colored diff and test output with 'Lihat output lengkap', Claude's Markdown answer, the Selesai line, the next request as a bubble, a Read card, and above the message box the status line plus the waiting follow-up 'dibaca Claude setelah langkah ini: pakai assertRaises ya'.">
+  <img src="docs/images/gui-typing.png" width="100%" alt="The GUI while Claude works on the second request, with the history sidebar on the left: tool cards with a colored diff and test output with 'Lihat output lengkap', Claude's Markdown answer with a copy button under it, the Selesai line, the next request as a bubble, a Read card, and above the message box the status line plus the waiting follow-up 'dibaca Claude setelah langkah ini: pakai assertRaises ya'.">
 </picture>
 
 *The first turn finished; Claude is working on the second request, and a follow-up is waiting.*
@@ -505,12 +511,15 @@ theme, and so do the screenshots below, which change with GitHub's theme.
 1. **Tool cards** show diffs in color with line numbers, and command output under the command. Long output is cut
    short, and **Lihat output lengkap** ("show full output") opens the rest.
 2. **Claude's answers are rendered as Markdown**, and `✓ Selesai` sums up each turn, as in the terminal.
-3. **The message box stays usable** while Claude works, with the same rules as in the terminal: the follow-up waits
+3. **Copy buttons.** Every code block in an answer has a copy button in its top-right corner (tooltip
+   `Salin kode · /copy 2`), every answer has one underneath (`Salin jawaban`), and a command card (`Bash`) shows one
+   when you point at it. The copied code has no Enter at the end, so pasting it into a terminal doesn't run it yet.
+4. **The message box stays usable** while Claude works, with the same rules as in the terminal: the follow-up waits
    above the box (`⏳ dibaca Claude setelah langkah ini`) until Claude reads it after the current step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/gui-session-dark.png">
-  <img src="docs/images/gui-session.png" width="100%" alt="The end of the GUI session: the Update card adding test_bagi_dengan_nol with assertRaises, the Bash card with three passing tests, the follow-up 'pakai assertRaises ya' as a bubble, Claude's answer, and the Selesai line with a turn cost of $0.0143 and a session total of $0.0374; the bottom bar shows konteks 2% and $0.0374.">
+  <img src="docs/images/gui-session.png" width="100%" alt="The end of the GUI session, with the history sidebar on the left: the Update card adding test_bagi_dengan_nol with assertRaises, the Bash card with three passing tests, the follow-up 'pakai assertRaises ya' as a bubble, Claude's answer, and the Selesai line with a turn cost of $0.0143 and a session total of $0.0374; the bottom bar shows konteks 2% and $0.0374.">
 </picture>
 
 *The end of the session: the follow-up appears where Claude read it, followed by Claude's answer and the totals.*
@@ -526,8 +535,8 @@ Keys in the GUI:
 | ↑ in the empty message box | Bring back the last message you sent |
 | 1 / 2 / 3 | Answer the permission question on screen |
 
-Everything else, such as `!command`, `@file`, `# note`, `/goal`, `/tasks` or `/model`, is typed into the message
-box as in the terminal. Conversations from the GUI and the terminal are stored in the same place, so you can
+Everything else, such as `!command`, `@file`, `# note`, `/goal`, `/tasks`, `/model` or `/copy 2`, is typed into the
+message box as in the terminal. Conversations from the GUI and the terminal are stored in the same place, so you can
 continue them either way. To stop, click **Keluar**, type `/exit`, or press Ctrl+C in the terminal. Reloading the
 page or opening a second tab does not interrupt anything.
 
@@ -572,13 +581,32 @@ computer, and open the printed address in your browser.
 | ↑ / ↓ | Your earlier messages |
 | `/tasks`, `/stop 2` | Watch or stop background agents and commands |
 | `/goal <condition>` | Keep working until the condition is met (`/goal` shows status, `/goal clear` cancels) |
+| `/copy`, `/copy 2` | Copy Claude's last answer, or code block 2 (see [Copying answers and commands](#copying-answers-and-commands)) |
 | `/rewind` | Restore files to how they were before an earlier prompt |
-| `/resume`, `/clear` | Switch to an older conversation, or start a fresh one |
+| `/resume`, `/clear` | Switch to an older conversation (`/resume ID` goes straight to one), or start a fresh one |
 | `/model`, `/mode`, `/status`, `/cost`, `/context` | Model, permission mode, session info, cost, context usage |
 | Ctrl+D, `/exit` (or Ctrl+C twice) | Quit |
 
 Other Claude Code commands, such as `/compact` and `/init`, and your own `.claude/commands/*.md` are passed through
 to Claude Code.
+
+### Copying answers and commands
+
+Selecting a command with the mouse often picks up the padding and broken lines of the screen. Instead, every code
+block in Claude's answers gets a number, shown under it in the terminal as a dim `📋 /copy 2`:
+
+- `/copy 2` copies code block 2, exactly as Claude wrote it.
+- `/copy` copies Claude's whole last answer (as Markdown).
+
+Both work while Claude is still working, and the numbers stay the same for the whole session, even after `/clear`.
+On your own computer the text goes straight to the clipboard: `pbcopy` on macOS, the Windows clipboard, or
+`wl-copy`, `xclip` or `xsel` on Linux. Over SSH it is sent to your terminal as an OSC 52 sequence, which many
+terminals turn into a copy (for example Windows Terminal, kitty, WezTerm, and iTerm2 once clipboard access is allowed
+in its settings). Whether that worked can't be checked, so the text is then also printed plainly between two lines,
+ready to select with the mouse.
+
+In the GUI, use the copy buttons on code blocks, answers and command cards, or type `/copy` or `/copy 2` in the
+message box.
 
 ### Permission modes
 
@@ -631,6 +659,9 @@ remembered per project in `.claude/settings.local.json`.
 | `Total biaya · Lanjutkan nanti dengan:` | Total cost · Continue later with: |
 | `Baru` · `Riwayat` · `Bantuan` · `Keluar` · `Kirim` | New · History · Help · Quit · Send (GUI buttons) |
 | `Lihat output lengkap` | Show full output |
+| `Salin kode` · `Salin jawaban` · `Salin command` · `Disalin` | Copy code · Copy answer · Copy command · Copied (GUI) |
+| `Riwayat obrolan` | Chat history (GUI sidebar) |
+| `clipboard tidak tersedia di sini, blok teks di bawah ini dengan mouse` | No clipboard here; select the text below with the mouse |
 
 ## Update and uninstall
 

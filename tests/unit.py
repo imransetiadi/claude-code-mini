@@ -358,4 +358,44 @@ capture(lambda: ui.on_result(res_cost(0.01)))
 check("C6 setelah reset dari mesin: biaya baru ditambahkan", abs(ui.cost_total - 0.08) < 1e-9, str(ui.cost_total))
 print("\nFAILS (cost additions):", fails or "none")
 
+# ============ K) menyalin jawaban Claude (/copy, tombol salin di GUI) ============
+import base64
+os.environ["CCMINI_CLIPBOARD"] = "none"  # clipboard asli komputer tidak disentuh
+old_tmux = os.environ.pop("TMUX", None)
+A1 = "Jalankan:\n\n```bash\nnpm install\nnpm test\n```\n\nlalu:\n\n    python3 -m unittest\n"
+check("K1 blok kode: ```fence``` dan berindentasi, sesuai urutan",
+      ng.code_blocks(A1) == ["npm install\nnpm test", "python3 -m unittest"], repr(ng.code_blocks(A1)))
+ui = mkui()
+out = capture(lambda: ui.show_text(A1))
+check("K2 label '📋 /copy N' di bawah tiap blok kode", "📋 /copy 1" in out and "📋 /copy 2" in out, out)
+out = capture(lambda: ui.show_text("Lagi:\n```\necho a\n```\n```\necho a\n```\n```\n```\n"))
+check("K3 nomor lanjut antar jawaban, blok kembar satu nomor, blok kosong tanpa nomor",
+      out.count("📋 /copy 3") == 2 and "/copy 4" not in out and ui.code_blocks == ["npm install\nnpm test",
+                                                                               "python3 -m unittest", "echo a"], out)
+ui.reset()
+check("K4 nomor blok kode tetap sesudah /clear", len(ui.code_blocks) == 3 and len(ui.answers) == 2)
+out = capture(lambda: ng.copy_command(ui, "1"))
+check("K5 /copy N tanpa clipboard: teks polos blok kodenya ditampilkan", "npm install\nnpm test" in out
+      and "clipboard tidak tersedia" in out and "Blok kode 1" in out, out)
+out = capture(lambda: ng.copy_command(ui, ""))
+check("K6 /copy tanpa nomor = jawaban terakhir", "Jawaban terakhir Claude" in out and "Lagi:" in out, out)
+out = capture(lambda: ng.copy_command(ui, "9"))
+check("K7 nomor yang tidak ada: petunjuk pemakaian", "yang ada: 1–3" in out, out)
+out = capture(lambda: ng.copy_command(mkui(), ""))
+check("K8 /copy sebelum ada jawaban", "Belum ada jawaban" in out, out)
+seq = ng.osc52_sequence("halo ✓")
+check("K9 OSC 52: base64 UTF-8 + BEL", seq == "\033]52;c;" + base64.b64encode("halo ✓".encode()).decode() + "\a", repr(seq))
+os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
+seq = ng.osc52_sequence("a")
+del os.environ["TMUX"]
+check("K10 OSC 52 di tmux: passthrough (ESC digandakan) lalu versi biasa",
+      seq == "\033Ptmux;\033\033]52;c;YQ==\a\033\\\033]52;c;YQ==\a", repr(seq))
+h = ng.md_html("a\n```\nx\n```\ny\n```\n```\n", [5, 0])
+check("K11 md_html: data-copy per blok kode sesuai urutan, blok tanpa nomor dilewati",
+      h.count('<pre data-copy="5"><code>x') == 1 and h.count("data-copy") == 1, h)
+check("K12 /copy dijalankan langsung walau Claude sedang bekerja", "/copy" in ng.IMMEDIATE_COMMANDS)
+if old_tmux is not None:
+    os.environ["TMUX"] = old_tmux
+print("\nFAILS (copy additions):", fails or "none")
+
 sys.exit(1 if fails else 0)
