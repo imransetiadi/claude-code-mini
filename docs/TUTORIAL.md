@@ -439,7 +439,8 @@ Isinya sama dengan versi terminal, hanya tampilannya berbeda:
   ditandai. Klik salah satunya untuk melanjutkan, **+ Baru** untuk percakapan baru. Setiap pindah, layar jadi
   lembar baru: percakapan baru mulai kosong, dan percakapan yang dilanjutkan menampilkan pesan, jawaban, dan kartu
   tool miliknya sendiri dari awal, di bawah judulnya. Reload halaman hanya menampilkan percakapan yang sedang dibuka.
-  Di jendela sempit, sidebar muncul menutupi halaman.
+  Untuk menyembunyikan sidebar: tombol panel di kiri atas, tombol ‹ di sebelah **+ Baru**, atau Ctrl+B (⌘B di Mac);
+  pilihannya diingat. Di jendela sempit, sidebar menggeser masuk menutupi halaman.
 - **Bawah.** Pilihan mode izin dan model, pemakaian konteks, biaya, goal, dan tugas background.
 - **Atas.** Tombol **Baru** (`/clear`), **Riwayat** (tampilkan/sembunyikan sidebar riwayat), **Rewind**,
   **Bantuan**, dan **Keluar**.
@@ -451,6 +452,7 @@ Isinya sama dengan versi terminal, hanya tampilannya berbeda:
 | Shift+Tab | ganti mode izin |
 | Tab | pilih saran `/perintah` atau `@path` yang muncul saat mengetik |
 | ↑ (kolom kosong) | pesan yang terakhir dikirim |
+| Ctrl+B (⌘B di Mac) | tampilkan / sembunyikan sidebar riwayat |
 | 1 / 2 / 3 | jawab pertanyaan izin yang sedang tampil |
 
 Semua perintah dan shortcut lain (`!command`, `@file`, `# catatan`, `/goal`, `/tasks`, `/model`, …) diketik di

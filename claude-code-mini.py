@@ -4005,8 +4005,8 @@ GUI_SHORTCUTS_TEXT = """\
   (↑ di kolom kosong = pesan terakhir) · pertanyaan izin: klik tombolnya atau tekan 1/2/3
 [bold]Salin:[/] tombol salin di pojok blok kode, di jawaban Claude dan di kartu command (Bash) · atau ketik
   [cyan]/copy[/] (jawaban terakhir) / [cyan]/copy 2[/] (blok kode nomor 2)
-[bold]Riwayat:[/] daftar percakapan di folder ini ada di sidebar kiri (tombol Riwayat menampilkan/menyembunyikannya);
-  klik salah satunya untuk melanjutkan · [cyan]+ Baru[/] = percakapan baru
+[bold]Riwayat:[/] daftar percakapan di folder ini ada di sidebar kiri; klik salah satunya untuk melanjutkan ·
+  [cyan]+ Baru[/] = percakapan baru · sembunyikan/tampilkan: tombol panel di kiri atas, Riwayat, atau [cyan]Ctrl+B[/] (⌘B di Mac)
 [bold]Tugas background:[/] progres tampil di bawah · [cyan]/tasks[/] detail & log · [cyan]/stop 2[/] hentikan
 [bold]Goal:[/] [cyan]/goal[/] [dim]kondisi[/] kerja terus sampai terpenuhi · [cyan]/goal[/] status · [cyan]/goal clear[/] batal
 """
@@ -4104,12 +4104,21 @@ main { flex: 1; overflow-y: auto; }
 /* sidebar riwayat obrolan */
 #body { flex: 1; display: flex; min-height: 0; }
 #pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-#side { display: none; width: 264px; flex: none; flex-direction: column; min-height: 0; background: var(--panel);
-  border-right: 1px solid var(--border); }
-body.side-open #side { display: flex; }
-.side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 6px;
+#side { display: flex; width: 0; flex: none; min-height: 0; overflow: hidden; background: var(--panel);
+  border-right: 0 solid var(--border); transition: width .22s ease; }
+body.side-open #side { width: 264px; border-right-width: 1px; }
+body.no-anim #side { transition: none; }
+.side-inner { width: 264px; flex: none; display: flex; flex-direction: column; min-height: 0; }
+.side-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 6px 12px;
   font-size: 13px; font-weight: 600; color: var(--muted); }
+.side-head .grow { flex: 1; }
 .side-head button { font-size: 12.5px; padding: 3px 9px; }
+.side-head .iconbtn { padding: 0; width: 28px; height: 28px; }
+.iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0;
+  border-color: transparent; background: none; color: var(--muted); flex: none; }
+.iconbtn:hover:not(:disabled) { color: var(--text); background: var(--raised); border-color: var(--border); }
+.iconbtn svg { width: 18px; height: 18px; }
+#sidetoggle[aria-pressed="true"] { color: var(--accent); }
 #sessions { flex: 1; overflow-y: auto; padding: 2px 8px 14px; display: flex; flex-direction: column; gap: 1px; }
 .sess { display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%; text-align: left;
   border: 1px solid transparent; background: none; border-radius: 8px; padding: 6px 10px; }
@@ -4120,9 +4129,11 @@ body.side-open #side { display: flex; }
 .sess .w { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess-empty { color: var(--faint); font-size: 13px; padding: 8px 10px; }
 #histbtn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
-@media (max-width: 859px) {
-  body.side-open #side { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; width: min(300px, 86vw);
-    box-shadow: 0 0 28px rgba(0,0,0,.28); }
+@media (max-width: 859px) {  /* layar sempit: sidebar menggeser masuk di atas halaman */
+  #side, body.side-open #side { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; width: min(300px, 86vw);
+    transform: translateX(-102%); transition: transform .22s ease; border-right-width: 1px; }
+  body.side-open #side { transform: none; box-shadow: 0 0 28px rgba(0,0,0,.28); }
+  .side-inner { width: 100%; }
 }
 details.thinking { color: var(--muted); font-style: italic; font-size: 14px; }
 details.thinking summary { cursor: pointer; }
@@ -4193,6 +4204,7 @@ footer select.yolo { color: var(--err); font-weight: 600; }
 </head>
 <body>
 <header>
+  <button id="sidetoggle" class="iconbtn" aria-controls="side" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg></button>
   <div class="brand"><span class="star">✻</span>claude-code-mini</div>
   <div class="repo" id="repo"></div>
   <div class="actions">
@@ -4207,9 +4219,12 @@ footer select.yolo { color: var(--err); font-weight: 600; }
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <div id="body">
 <aside id="side" aria-label="Riwayat obrolan">
-  <div class="side-head"><span>Riwayat obrolan</span>
-    <button id="sidenew" title="Mulai percakapan baru (konteks lama dibuang)">+ Baru</button></div>
+  <div class="side-inner">
+  <div class="side-head"><span class="grow">Riwayat obrolan</span>
+    <button id="sidenew" title="Mulai percakapan baru (konteks lama dibuang)">+ Baru</button>
+    <button id="sidehide" class="iconbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/><path d="M16 9l-3 3 3 3"/></svg></button></div>
   <nav id="sessions"></nav>
+  </div>
 </aside>
 <div id="pane">
 <main id="main"><div id="chat"></div></main>
@@ -4325,9 +4340,14 @@ function copyCmd(text) {  // "/copy" / "/copy N" diketik di kolom pesan: disalin
 let sessTimer = null, sessCurrent = "";
 const sideWide = () => window.matchMedia("(min-width: 860px)").matches;
 const sideOpen = () => document.body.classList.contains("side-open");
+const SIDE_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Ctrl+B";
 function setSide(open, remember) {
   document.body.classList.toggle("side-open", open);
-  $("histbtn").setAttribute("aria-pressed", open ? "true" : "false");
+  ["histbtn", "sidetoggle"].forEach(id => $(id).setAttribute("aria-pressed", open ? "true" : "false"));
+  const tip = (open ? "Sembunyikan" : "Tampilkan") + " riwayat obrolan (" + SIDE_KEY + ")";
+  ["sidetoggle", "sidehide"].forEach(id => { $(id).title = tip; $(id).setAttribute("aria-label", tip); });
+  $("side").inert = !open;  // tersembunyi: isinya tidak bisa difokus lewat Tab
+  $("side").setAttribute("aria-hidden", open ? "false" : "true");
   if (remember) { try { localStorage.setItem("ccmini.side", open ? "1" : "0"); } catch (e) { /* tanpa storage */ } }
   if (open) loadSessions();
 }
@@ -4702,13 +4722,22 @@ document.addEventListener("keydown", (e) => {
 });
 
 $("histbtn").onclick = () => setSide(!sideOpen(), true);
+$("sidetoggle").onclick = () => setSide(!sideOpen(), true);
+$("sidehide").onclick = () => setSide(false, true);
+document.addEventListener("keydown", (e) => {  // Ctrl+B / ⌘B: tampilkan/sembunyikan sidebar (juga saat mengetik)
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") {
+    e.preventDefault(); setSide(!sideOpen(), sideWide());
+  }
+});
 $("sidenew").onclick = () => goConversation("/clear");
 document.addEventListener("click", (e) => {  // layar sempit: sidebar menutupi halaman, klik di luarnya = tutup
-  if (sideOpen() && !sideWide() && !$("side").contains(e.target) && e.target !== $("histbtn")) setSide(false, false);
+  if (sideOpen() && !sideWide() && !$("side").contains(e.target) && !e.target.closest("#histbtn, #sidetoggle")) setSide(false, false);
 });
 {
   const savedOpen = () => { try { return localStorage.getItem("ccmini.side") !== "0"; } catch (e) { return true; } };
+  document.body.classList.add("no-anim");
   setSide(sideWide() && savedOpen(), false);
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("no-anim")));
   // jendela dilebarkan/disempitkan: lebar = sidebar mengikuti pilihan terakhir, sempit = ditutup (jadi overlay)
   window.matchMedia("(min-width: 860px)").addEventListener("change", (e) => setSide(e.matches && savedOpen(), false));
 }

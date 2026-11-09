@@ -494,8 +494,9 @@ theme, and so do the screenshots below, which change with GitHub's theme.
 2. **History sidebar** (`Riwayat obrolan`): the conversations in the project folder, newest first, with the open one
    marked. Click one to continue it, or **+ Baru** to start a new one. Each switch opens a clean page: a new
    conversation starts empty, and a continued one shows its own messages, answers and tool cards from the start,
-   under its title. Reloading the page shows only the open conversation. In a narrow window the sidebar opens over
-   the page.
+   under its title. Reloading the page shows only the open conversation. To hide the sidebar, use the panel button
+   at the top left, the ‹ button next to **+ Baru**, or Ctrl+B (⌘B on a Mac); the choice is remembered. In a narrow
+   window the sidebar slides in over the page.
 3. **The conversation**: your messages are bubbles on the right, and each tool call is a card (here `Bash` with its
    command).
 4. **Permission questions are cards with buttons.** Click one or press `1`, `2` or `3`. Choosing `3`
@@ -536,6 +537,7 @@ Keys in the GUI:
 | Shift+Tab | Switch the permission mode |
 | Tab | Pick the `/command` or `@path` suggestion shown while typing |
 | ↑ in the empty message box | Bring back the last message you sent |
+| Ctrl+B (⌘B on a Mac) | Show or hide the history sidebar |
 | 1 / 2 / 3 | Answer the permission question on screen |
 
 Everything else, such as `!command`, `@file`, `# note`, `/goal`, `/tasks`, `/model` or `/copy 2`, is typed into the

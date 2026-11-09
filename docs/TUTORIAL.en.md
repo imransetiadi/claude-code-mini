@@ -451,8 +451,9 @@ terminal; only the presentation differs:
 - **History sidebar** (`Riwayat obrolan`, "chat history"). On the left: the conversations in the project folder,
   newest first, with the open one marked. Click one to continue it, or **+ Baru** for a new one. Each switch opens a
   clean page: a new conversation starts empty, and a continued one shows its own messages, answers and tool cards
-  from the start, under its title. Reloading the page shows only the open conversation. In a narrow window the
-  sidebar opens over the page.
+  from the start, under its title. Reloading the page shows only the open conversation. To hide the sidebar, use the
+  panel button at the top left, the ‹ button next to **+ Baru**, or Ctrl+B (⌘B on a Mac); the choice is remembered.
+  In a narrow window the sidebar slides in over the page.
 - **Bottom bar.** Permission mode and model selectors, context usage, cost, goal, and background tasks.
 - **Top bar.** **Baru** ("new", `/clear`), **Riwayat** ("history": show or hide the history sidebar), **Rewind**,
   **Bantuan** ("help") and **Keluar** ("quit").
@@ -464,6 +465,7 @@ terminal; only the presentation differs:
 | Shift+Tab | switch the permission mode |
 | Tab | pick the `/command` or `@path` suggestion shown while typing |
 | ↑ (empty box) | the last message you sent |
+| Ctrl+B (⌘B on a Mac) | show or hide the history sidebar |
 | 1 / 2 / 3 | answer the permission question on screen |
 
 All other commands and shortcuts (`!command`, `@file`, `# note`, `/goal`, `/tasks`, `/model`, …) are typed into the
