@@ -449,8 +449,10 @@ terminal; only the presentation differs:
   command card (`Bash`) shows one when you point at it. Copied code has no Enter at the end, so it doesn't run as
   soon as you paste it into a terminal. Typing `/copy` or `/copy 2` in the message box works too (section 7.5).
 - **History sidebar** (`Riwayat obrolan`, "chat history"). On the left: the conversations in the project folder,
-  newest first, with the open one marked. Click one to continue it, or **+ Baru** for a new one. In a narrow window
-  the sidebar opens over the page.
+  newest first, with the open one marked. Click one to continue it, or **+ Baru** for a new one. Each switch opens a
+  clean page: a new conversation starts empty, and a continued one shows its own messages, answers and tool cards
+  from the start, under its title. Reloading the page shows only the open conversation. In a narrow window the
+  sidebar opens over the page.
 - **Bottom bar.** Permission mode and model selectors, context usage, cost, goal, and background tasks.
 - **Top bar.** **Baru** ("new", `/clear`), **Riwayat** ("history": show or hide the history sidebar), **Rewind**,
   **Bantuan** ("help") and **Keluar** ("quit").

@@ -436,8 +436,10 @@ Isinya sama dengan versi terminal, hanya tampilannya berbeda:
   menampilkannya saat kursor diarahkan ke kartu itu. Kode yang disalin tanpa Enter di akhir, jadi tidak langsung jalan
   saat ditempel di terminal. `/copy` dan `/copy 2` di kolom pesan juga bisa (bagian 7.5).
 - **Sidebar riwayat obrolan.** Di kiri: percakapan di folder proyek ini, terbaru di atas, yang sedang dibuka
-  ditandai. Klik salah satunya untuk melanjutkan, **+ Baru** untuk percakapan baru. Di jendela sempit, sidebar
-  muncul menutupi halaman.
+  ditandai. Klik salah satunya untuk melanjutkan, **+ Baru** untuk percakapan baru. Setiap pindah, layar jadi
+  lembar baru: percakapan baru mulai kosong, dan percakapan yang dilanjutkan menampilkan pesan, jawaban, dan kartu
+  tool miliknya sendiri dari awal, di bawah judulnya. Reload halaman hanya menampilkan percakapan yang sedang dibuka.
+  Di jendela sempit, sidebar muncul menutupi halaman.
 - **Bawah.** Pilihan mode izin dan model, pemakaian konteks, biaya, goal, dan tugas background.
 - **Atas.** Tombol **Baru** (`/clear`), **Riwayat** (tampilkan/sembunyikan sidebar riwayat), **Rewind**,
   **Bantuan**, dan **Keluar**.

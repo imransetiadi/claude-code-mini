@@ -492,7 +492,10 @@ theme, and so do the screenshots below, which change with GitHub's theme.
    **Riwayat** ("history", shows or hides the history sidebar), **Rewind** (undo file changes), **Bantuan**
    ("help") and **Keluar** ("quit").
 2. **History sidebar** (`Riwayat obrolan`): the conversations in the project folder, newest first, with the open one
-   marked. Click one to continue it, or **+ Baru** to start a new one. In a narrow window it opens over the page.
+   marked. Click one to continue it, or **+ Baru** to start a new one. Each switch opens a clean page: a new
+   conversation starts empty, and a continued one shows its own messages, answers and tool cards from the start,
+   under its title. Reloading the page shows only the open conversation. In a narrow window the sidebar opens over
+   the page.
 3. **The conversation**: your messages are bubbles on the right, and each tool call is a card (here `Bash` with its
    command).
 4. **Permission questions are cards with buttons.** Click one or press `1`, `2` or `3`. Choosing `3`

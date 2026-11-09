@@ -4,6 +4,7 @@ Code asli dan API tiruan (fakeapi.py). Tanpa browser dan tanpa API key; tampilan
     python tests/gui.py      (jalankan setelah `claude-code-mini.py --setup`; butuh pyte + ptyprocess/pywinpty)
 Env sama dengan tests/e2e.py (CCMINI_APP, CCMINI_OUT).
 """
+import contextlib
 import http.client
 import json
 import re
@@ -78,6 +79,21 @@ class Gui:
         status, data = self.request("POST", "/api/" + action, json.dumps(body or {}),
                                     {"Content-Type": "application/json", "X-CCMini-Token": self.token})
         return json.loads(data) if status == 200 else {"status": status}
+
+    def replay(self, seconds=2.0):
+        """Event yang diterima tab yang baru dibuka / di-reload (koneksi SSE kedua, dibaca sebentar)."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=seconds)
+        conn.request("GET", "/events?t=" + self.token)
+        resp, buf, end = conn.getresponse(), b"", time.time() + seconds
+        with contextlib.suppress(OSError, http.client.HTTPException):
+            while time.time() < end:
+                chunk = resp.read1(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        conn.close()
+        blocks = buf.decode("utf-8", "replace").split("\n\n")[:-1]  # blok terakhir mungkin terpotong
+        return [json.loads(line[6:]) for b in blocks for line in b.splitlines() if line.startswith("data: ")]
 
     def mark(self):
         return len(self.events)
@@ -217,7 +233,7 @@ def test_flow(g):
     # /clear lalu /resume -> pilihan percakapan lama (percakapan tadi)
     m = g.mark()
     g.api("send", {"text": "/clear"})
-    g.wait(lambda e: e["type"] == "log" and "Percakapan baru dimulai" in e["html"], 60, m)
+    g.wait(is_type("reset", kind="clear"), 60, m)  # GUI: lembar baru yang kosong
     time.sleep(0.8)  # status terbaru (/clear memulai hitungan biaya dari 0)
     cost_before = [e for e in g.events if e["type"] == "status"][-1]["cost"]
     m = g.mark()
@@ -245,7 +261,7 @@ def test_flow(g):
     first = [e for e in g.events if e["type"] == "status"][-1].get("session")
     m = g.mark()
     g.api("send", {"text": "/clear"})
-    g.wait(lambda e: e["type"] == "log" and "Percakapan baru dimulai" in e["html"], 60, m)
+    g.wait(is_type("reset", kind="clear"), 60, m)  # GUI: lembar baru yang kosong
     m = g.mark()
     g.api("send", {"text": "percakapan kedua [[say:jawaban-kedua]]"})
     g.wait(is_type("assistant", html="jawaban-kedua"), 60, m)
@@ -261,6 +277,20 @@ def test_flow(g):
     g.wait(lambda e: e["type"] == "log" and "Percakapan lama dilanjutkan" in e["html"], 60, m)
     g.wait(lambda e: e["type"] == "status" and e.get("session") == first, 60, m)
     check("G14b /resume ID (klik di sidebar) langsung pindah ke percakapan itu", True)
+    after = g.events[m:]
+    i = next((k for k, e in enumerate(after) if e["type"] == "reset"), None)
+    shown = after[i + 1:] if i is not None else []
+    check("G15 pindah percakapan = lembar baru berisi riwayat percakapan itu (bukan lanjut di bawah)",
+          i is not None and after[i].get("kind") == "resume" and after[i].get("title")
+          and any(e["type"] == "user" and "[[say:Pakai" in e.get("text", "") for e in shown)
+          and any(e["type"] == "assistant" and 'data-copy="' in e["html"] and "gui-salin" in e["html"] for e in shown)
+          and not any(e["type"] == "assistant" and "jawaban-kedua" in e["html"] for e in shown),
+          json.dumps(after[i] if i is not None else after[-3:])[:300])
+    replay = g.replay()
+    check("G15b reload halaman sesudah pindah: hanya percakapan yang sedang dibuka yang diputar ulang",
+          [e["type"] for e in replay[:2]] == ["hello", "reset"] and not any("jawaban-kedua" in e.get("html", "")
+                                                                          for e in replay),
+          json.dumps([e["type"] for e in replay][:12]))
 
     # /exit -> browser diberi tahu, proses selesai
     m = g.mark()

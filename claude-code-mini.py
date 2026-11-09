@@ -2169,6 +2169,12 @@ class UI:
             return "", None  # rencananya ditampilkan di panel persetujuan
         return clip(json.dumps(inp, ensure_ascii=False), 400 if full else 160), None
 
+    def new_view(self, kind: str, session_id: str | None) -> None:
+        """Percakapan berganti ("clear" = baru, "resume" = lanjutkan). Terminal: cuplikan riwayat di bawah yang lama.
+        GUI (WebUI): layar dibersihkan dan isi percakapan yang dilanjutkan ditampilkan lengkap."""
+        if kind == "resume" and session_id:
+            show_history(session_id, self.repo)
+
     def remember_answer(self, text: str) -> list[tuple[str, int]]:
         """Simpan jawaban Claude untuk /copy. Tiap blok kodenya mendapat nomor urut sesi; return (isi, nomor) per blok
         sesuai urutannya (blok kosong: nomor 0; blok yang sama persis di satu jawaban memakai satu nomor)."""
@@ -4049,6 +4055,12 @@ button.danger { color: var(--err); }
 main { flex: 1; overflow-y: auto; }
 #chat { max-width: 940px; margin: 0 auto; padding: 22px 16px 30px; display: flex; flex-direction: column; gap: 12px; }
 .empty { color: var(--muted); text-align: center; margin-top: 14vh; line-height: 1.8; }
+/* pindah percakapan: lembar lama meredup, lembar baru masuk dengan halus */
+#chat { transition: opacity .18s ease; }
+#chat.switching { opacity: .35; pointer-events: none; }
+.convtitle { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: 12.5px; margin: 2px 0 6px; }
+.convtitle::before, .convtitle::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.convtitle span { max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty .big { font-size: 34px; color: var(--accent); }
 .empty small { color: var(--faint); }
 .user { align-self: flex-end; max-width: 85%; background: var(--user); border-radius: 14px; padding: 8px 14px;
@@ -4334,14 +4346,25 @@ async function loadSessions() {
     b.appendChild(mk("span", "w", it.when + (it.branch ? " · ⎇ " + it.branch : "")));
     if (it.id === sessCurrent) b.setAttribute("aria-current", "true");
     b.onclick = () => {
-      if (it.id === sessCurrent || !guard("/resume")) return;
-      post("send", { text: "/resume " + it.id });
-      if (!sideWide()) setSide(false, false);
+      if (it.id !== sessCurrent) goConversation("/resume " + it.id, b);
     };
     nav.appendChild(b);
   });
 }
 function refreshSessions() { clearTimeout(sessTimer); sessTimer = setTimeout(loadSessions, 300); }
+let switchTimer = null;
+function switching(on) {  // umpan balik langsung saat pindah / mulai percakapan, sampai lembar barunya datang
+  chat.classList.toggle("switching", on);
+  clearTimeout(switchTimer);
+  if (on) switchTimer = setTimeout(() => chat.classList.remove("switching"), 8000);
+}
+function goConversation(cmd, item) {
+  if (!guard(cmd.split(" ")[0])) return;
+  if (item) { document.querySelectorAll("#sessions .sess.on").forEach(b => b.classList.remove("on")); item.classList.add("on"); }
+  if (!st.busy) switching(true);  // saat Claude bekerja perintahnya antre, jadi layar belum berganti
+  post("send", { text: cmd });
+  if (!sideWide()) setSide(false, false);
+}
 function banner(text, kind) {
   const b = $("banner");
   b.hidden = !text; b.textContent = text || ""; b.className = "banner" + (kind ? " " + kind : "");
@@ -4354,6 +4377,17 @@ function title() {
 // ---------- event dari claude-code-mini ----------
 const H = {
   user(ev) { add(mk("div", "user", ev.text)); },
+  reset(ev) {  // percakapan berganti: lembar baru, bukan lanjut di bawah percakapan sebelumnya
+    switching(false);
+    chat.textContent = ""; tools.clear(); asks.clear(); lastLog = null; answers.length = 0;
+    if (ev.kind === "resume") {
+      const t = mk("div", "convtitle"); t.appendChild(mk("span", null, ev.title || "Percakapan sebelumnya")); chat.appendChild(t);
+    } else chat.appendChild(emptyState());
+    main.scrollTop = 0;
+    if (chat.animate) chat.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }],
+      { duration: 240, easing: "ease-out" });
+    title();
+  },
   assistant(ev) {
     const box = mk("div", "reply"), d = mk("div", "md");
     d.innerHTML = ev.html; links(d);
@@ -4566,6 +4600,7 @@ function send() {
 document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {
   const cmd = b.dataset.cmd;
   if (cmd === "/exit" && !confirm("Tutup claude-code-mini? Percakapan tetap tersimpan dan bisa dilanjutkan nanti.")) return;
+  if (cmd === "/clear") { goConversation(cmd); return; }
   if (!guard(cmd)) return;
   post("send", { text: cmd });
 });
@@ -4667,18 +4702,15 @@ document.addEventListener("keydown", (e) => {
 });
 
 $("histbtn").onclick = () => setSide(!sideOpen(), true);
-$("sidenew").onclick = () => {
-  if (!guard("/clear")) return;
-  post("send", { text: "/clear" });
-  if (!sideWide()) setSide(false, false);
-};
+$("sidenew").onclick = () => goConversation("/clear");
 document.addEventListener("click", (e) => {  // layar sempit: sidebar menutupi halaman, klik di luarnya = tutup
   if (sideOpen() && !sideWide() && !$("side").contains(e.target) && e.target !== $("histbtn")) setSide(false, false);
 });
 {
-  let saved = null;
-  try { saved = localStorage.getItem("ccmini.side"); } catch (e) { /* tanpa storage */ }
-  setSide(sideWide() && saved !== "0", false);
+  const savedOpen = () => { try { return localStorage.getItem("ccmini.side") !== "0"; } catch (e) { return true; } };
+  setSide(sideWide() && savedOpen(), false);
+  // jendela dilebarkan/disempitkan: lebar = sidebar mengikuti pilihan terakhir, sempit = ditutup (jadi overlay)
+  window.matchMedia("(min-width: 860px)").addEventListener("change", (e) => setSide(e.matches && savedOpen(), false));
 }
 
 chat.appendChild(emptyState());
@@ -4814,6 +4846,10 @@ class WebHub:
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(self._push, ev)
 
+    def reset(self) -> None:
+        """Percakapan berganti: tab yang dibuka/di-reload sesudah ini hanya memutar ulang percakapan yang baru."""
+        self.log.clear()
+
     def _push(self, ev: dict[str, Any]) -> None:
         self.seq += 1
         ev["seq"] = self.seq
@@ -4922,6 +4958,53 @@ class WebUI(UI):
 
     def spin_stop(self) -> None:
         pass
+
+    def new_view(self, kind: str, session_id: str | None) -> None:
+        """Lembar baru di browser: riwayat SSE dikosongkan, layar dibersihkan (event "reset"), lalu isi percakapan yang
+        dilanjutkan dikirim ulang dari transkripnya: pesan, jawaban (dengan tombol salin) dan kartu tool."""
+        title = ""
+        if session_id:
+            info = next((s for s in session_infos(self.repo, 500) if s.session_id == session_id), None)
+            title = clip(session_title(info), 120) if info else ""
+        self.hub.reset()
+        self.hub.emit("reset", {"kind": kind, "session": session_id or "", "title": title})
+        if kind == "resume" and session_id:
+            with contextlib.suppress(Exception):
+                self.replay_history(session_id)
+
+    def replay_history(self, session_id: str, limit: int = 400) -> None:
+        if get_session_messages is None:
+            return
+        msgs = [m for m in get_session_messages(session_id, directory=str(self.repo))
+                if not m.parent_tool_use_id and m.type in ("user", "assistant")][-limit:]
+        hidden = ("<", "Stop hook feedback:", "A session-scoped Stop hook is now active", "Goal check-in:", "Caveat:")
+        for m in msgs:
+            content = m.message.get("content") if isinstance(m.message, dict) else None
+            blocks = [{"type": "text", "text": content}] if isinstance(content, str) else (content or [])
+            for b in blocks:
+                if not isinstance(b, dict):
+                    continue
+                kind = b.get("type")
+                if kind == "text" and (b.get("text") or "").strip():
+                    text = b["text"]
+                    if m.type == "assistant":
+                        self.show_text(text)
+                    elif not text.lstrip().startswith(hidden):  # obrolan internal (/goal, hook) tidak ditampilkan
+                        self.hub.emit("user", {"text": text.strip()})
+                elif kind == "tool_use" and m.type == "assistant":
+                    name, inp = b.get("name") or "", b.get("input") or {}
+                    self.tool_names[b.get("id", "")] = name
+                    summary, _ = self.describe_tool(name, inp)
+                    cmd = inp.get("command", "") if name in ("Bash", "PowerShell") else ""
+                    self.hub.emit("tool", {"id": b.get("id", ""), "name": TOOL_LABEL.get(name, name), "summary": summary,
+                                           "detail": "", "nested": False, "copy": cmd if isinstance(cmd, str) else ""})
+                elif kind == "tool_result" and m.type == "user":
+                    block = ToolResultBlock(tool_use_id=b.get("tool_use_id", ""), content=b.get("content"),
+                                            is_error=bool(b.get("is_error")))
+                    msg = self.result_summary(block)
+                    if msg is not None:
+                        self.hub.emit("tool_result", {"id": block.tool_use_id, "summary": msg,
+                                                      "error": bool(block.is_error), "full": "", "nested": False})
 
     def show_text(self, text: str) -> None:
         nums = [n for _, n in self.remember_answer(text)]
@@ -5322,7 +5405,7 @@ def run_gui(repo: Path, args: argparse.Namespace, resume_id: str | None, continu
             try:
                 rid, cont = resume_id, continue_last
                 if rid:
-                    show_history(rid, repo)
+                    ui.new_view("resume", rid)
                 while True:
                     action = await session(ui, rid, cont)
                     cont = False
@@ -5361,15 +5444,17 @@ def after_session(ui: UI, action: Any, repo: Path) -> tuple[bool, str | None]:
     if action == "clear":
         had_goal = ui.goal
         ui.reset()
-        console.print("[dim]✻ Percakapan baru dimulai (konteks lama dibuang"
-                      + (f' · goal "{rich_escape(clip(oneline(had_goal.condition), 60))}" ikut dibatalkan' if had_goal else "")
-                      + ")[/]")
+        ui.new_view("clear", None)
+        if had_goal or not getattr(ui, "gui", False):  # GUI: lembar baru yang kosong sudah cukup jelas
+            console.print("[dim]✻ Percakapan baru dimulai (konteks lama dibuang"
+                          + (f' · goal "{rich_escape(clip(oneline(had_goal.condition), 60))}" ikut dibatalkan'
+                             if had_goal else "") + ")[/]")
         return False, None
     if isinstance(action, tuple) and action[0] == "resume":
         cost, had_goal = ui.cost_total, ui.goal
         ui.reset()
         ui.cost_base = cost
-        show_history(action[1], repo)
+        ui.new_view("resume", action[1])
         console.print("[dim]✻ Percakapan lama dilanjutkan"
                       + (f' · goal "{rich_escape(clip(oneline(had_goal.condition), 60))}" tetap tersimpan di percakapan tadi'
                          if had_goal else "") + "[/]")
