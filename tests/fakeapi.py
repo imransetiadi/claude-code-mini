@@ -197,7 +197,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             content = [{"type": "tool_use", "id": f"toolu_fake{RUN}{seq:04d}", "name": decision[1], "input": decision[2]}]
             stop = "tool_use"
-        usage = {"input_tokens": 120, "output_tokens": 12, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+        # cukup besar supaya biaya per giliran terlihat di tampilan 4 desimal (± $0.002)
+        usage = {"input_tokens": 12000, "output_tokens": 1200, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
         if not body.get("stream"):
             return self._json(200, {"id": msg_id, "type": "message", "role": "assistant", "model": model,
                                     "content": content, "stop_reason": stop, "stop_sequence": None, "usage": usage})
@@ -225,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
                                               "delta": {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}})
         sse(self, "content_block_stop", {"type": "content_block_stop", "index": 0})
         sse(self, "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
-                                    "usage": {"output_tokens": 12}})
+                                    "usage": {"output_tokens": 1200}})
         sse(self, "message_stop", {"type": "message_stop"})
 
 

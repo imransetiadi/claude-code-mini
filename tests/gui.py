@@ -216,12 +216,19 @@ def test_flow(g):
     m = g.mark()
     g.api("send", {"text": "/clear"})
     g.wait(lambda e: e["type"] == "log" and "Percakapan baru dimulai" in e["html"], 60, m)
+    time.sleep(0.8)  # status terbaru (/clear memulai hitungan biaya dari 0)
+    cost_before = [e for e in g.events if e["type"] == "status"][-1]["cost"]
     m = g.mark()
     g.api("send", {"text": "/resume"})
     ask = g.wait(is_type("ask", kind="choice"), 30, m)
     g.api("answer", {"id": ask["id"], "value": "0"})
     g.wait(lambda e: e["type"] == "log" and "Percakapan lama dilanjutkan" in e["html"], 60, m)
     check("G10 /resume: pilih percakapan lama lewat tombol", len(ask["options"]) >= 2)
+    g.wait(lambda e: e["type"] == "log" and "Terhubung" in e["html"], 60, m)  # proses baru + cek /goal lokal
+    time.sleep(1.5)
+    cost_after = [e for e in g.events if e["type"] == "status"][-1]["cost"]
+    check("G10b /resume tidak menambah biaya (biaya lama yang dipulihkan mesin bukan pengeluaran baru)",
+          cost_after == cost_before and "0 langkah" not in g.logs(m), f"{cost_before} -> {cost_after}")
 
     # /exit -> browser diberi tahu, proses selesai
     m = g.mark()

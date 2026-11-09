@@ -16,6 +16,7 @@ asli tidak tersentuh.
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -161,6 +162,14 @@ def test_print_mode():
         r = subprocess.run([sys.executable, script, str(REPO), "-p", "[[say:x]]"], env=env(False, ANTHROPIC_API_KEY=None),
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=180)
         check("P9 exit code dari proses venv diteruskan (tanpa key -> 1)", r.returncode == 1, f"rc={r.returncode}")
+    # percakapan lanjutan (-c): biaya lama yang dipulihkan mesin bukan pengeluaran run ini
+    run_p("[[say:biaya-satu]]")
+    rc, out = run_p("[[say:biaya-dua]]", "-c")
+    (OUT / "p10.txt").write_text(out, encoding="utf-8")
+    m = re.search(r"biaya:\s*\$([\d.]+)\s*·\s*total\s+sesi:\s*\$([\d.]+)", out)
+    check("P10 -c: biaya lama tidak dihitung lagi (satu baris Selesai, total sesi = biaya giliran)",
+          rc == 0 and out.count("Selesai") == 1 and m is not None and m.group(1) == m.group(2) and float(m.group(1)) > 0,
+          f"rc={rc} {out[-500:]}")
     # Ctrl+C dan Esc di mode -p (butuh terminal): exit 130
     for name, keyname in (("P6 -p Ctrl+C -> exit 130", "C-c"), ("P7 -p Esc -> exit 130", "Escape")):
         t = Term(APP + [str(REPO), "--model", "haiku", "--yolo", "-p", "[[sleep:4:3]]"], env=env(),

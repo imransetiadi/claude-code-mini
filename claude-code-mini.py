@@ -1467,12 +1467,16 @@ class UI:
         self.sent_pending: deque[list[Any]] = deque()  # [isi terkirim, label] pesan susulan yang belum dibaca Claude
         self.tui_turn = False  # giliran kita jalan dengan prompt aktif: spinner & Esc lewat prompt, bukan Live/KeyWatcher
         self.cont_seq = 0  # nomor urut giliran lanjutan (continue_turn), untuk pengaman waktunya
+        # Biaya yang dipulihkan mesin untuk percakapan lanjutan (--resume, -c, /resume, sambung ulang): total_cost_usd
+        # proses baru langsung membawa biaya lama percakapan itu. Angka itu titik nol, bukan pengeluaran run ini.
+        self.cost_offset = 0.0
+        self.cost_seen = False  # hasil pertama proses ini sudah diterima
 
     def reset(self) -> None:
         """Mulai percakapan baru dari nol (awal script, /clear, /resume)."""
         self.tool_names: dict[str, str] = {}
-        self.cost_base = 0.0  # biaya dari proses sebelumnya (sebelum auto-recovery)
-        self.cost_proc = 0.0  # total_cost_usd terakhir dari proses yang sedang jalan (kumulatif)
+        self.cost_base = 0.0  # biaya dari proses sebelumnya (sebelum auto-recovery / /resume)
+        self.cost_proc = 0.0  # pengeluaran proses yang sedang jalan (total_cost_usd - cost_offset, kumulatif)
         self.header_shown = False
         self.session_id: str | None = None
         self.failures = 0
@@ -1483,9 +1487,11 @@ class UI:
         self.plan_file: str | None = None  # file rencana yang terakhir ditulis Claude di plan mode (~/.claude/plans/…)
 
     def on_reconnect(self) -> None:
-        """Proses baru setelah error: biaya proses lama disimpan, hitungan proses baru mulai dari 0."""
+        """Proses baru setelah error (atau CLI me-reset hitungannya): biaya proses lama disimpan, hitungan baru dari 0."""
         self.cost_base += self.cost_proc
         self.cost_proc = 0.0
+        self.cost_offset = 0.0
+        self.cost_seen = False
 
     @property
     def cost_total(self) -> float:
@@ -2428,10 +2434,17 @@ class UI:
         self.spin_stop()
         self.session_id = msg.session_id or self.session_id
         self.failures = 0
-        # Dalam satu proses ClaudeSDKClient, total_cost_usd bersifat kumulatif.
+        # total_cost_usd kumulatif per percakapan: saat percakapan dilanjutkan (--resume, -c, /resume, sambung ulang),
+        # mesin memulihkan biaya lamanya (lastCost). Hasil pertama proses seperti itu selalu cek /goal lokal tanpa
+        # panggilan API (num_turns 0), jadi angkanya = biaya yang dipulihkan -> titik nol, bukan pengeluaran baru.
         total = msg.total_cost_usd or 0.0
-        turn_cost = max(total - self.cost_proc, 0.0)
-        self.cost_proc = max(total, self.cost_proc)
+        if not self.cost_seen:
+            self.cost_seen = True
+            if msg.num_turns == 0 and total > 0:
+                self.cost_offset = total
+        spent = max(total - self.cost_offset, 0.0)
+        turn_cost = max(spent - self.cost_proc, 0.0)
+        self.cost_proc = max(spent, self.cost_proc)
 
         if self.result_ours:
             self.last_result = msg

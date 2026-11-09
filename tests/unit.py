@@ -29,8 +29,8 @@ def asst(text, stop_reason=None):
     return parse_message({"type": "assistant", "message": {"id": "m", "type": "message", "role": "assistant", "model": "x", "stop_reason": stop_reason, "content": [{"type": "text", "text": text}]}, "parent_tool_use_id": None, "session_id": S, "uuid": "u"})
 def user_text(text):
     return parse_message({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}, "parent_tool_use_id": None, "session_id": S, "uuid": "u2"})
-def result(num_turns=0, subtype="success", is_error=False, text="", origin=None, terminal="completed"):
-    return parse_message({"type": "result", "subtype": subtype, "is_error": is_error, "num_turns": num_turns, "duration_ms": 10, "duration_api_ms": 5, "result": text, "session_id": S, "total_cost_usd": 0.01, "usage": {}, "uuid": "r", "origin": origin, "terminal_reason": terminal})
+def result(num_turns=0, subtype="success", is_error=False, text="", origin=None, terminal="completed", cost=0.01):
+    return parse_message({"type": "result", "subtype": subtype, "is_error": is_error, "num_turns": num_turns, "duration_ms": 10, "duration_api_ms": 5, "result": text, "session_id": S, "total_cost_usd": cost, "usage": {}, "uuid": "r", "origin": origin, "terminal_reason": terminal})
 def notif(text="A hook blocked the turn from ending 9 consecutive times — overriding and ending turn. blah", key="stop-hook-block-cap"):
     return parse_message({"type": "system", "subtype": "notification", "key": key, "text": text, "priority": "high", "color": "warning", "uuid": "n", "session_id": S})
 def mkui(mode="acceptEdits"):
@@ -193,12 +193,15 @@ try:
 except Exception as e:
     ok = False
 check("R6b /status: kondisi dengan [/tag] aman", ok)
-# R7: hasil lokal dengan biaya (mis. /compact) tetap menampilkan ✓ Selesai + biaya; tanpa biaya tidak
+# R7: hasil lokal dengan biaya (mis. /compact, setelah ada giliran di proses ini) tetap menampilkan ✓ Selesai + biaya;
+#     tanpa biaya tidak
 ui = mkui(); ui.result_ours = True; ui.cost_proc = 0.0
-out = capture(lambda: ui.render(result(num_turns=0, text="")))
+capture(lambda: ui.render(result(num_turns=1, text="ok", cost=0.01)))
+ui.result_ours = True
+out = capture(lambda: ui.render(result(num_turns=0, text="", cost=0.02)))
 check("R7a hasil lokal berbiaya -> ✓ Selesai", "✓ Selesai" in out and "biaya: $0.0100" in out, out)
 ui.result_ours = True
-out = capture(lambda: ui.render(result(num_turns=0, text="")))
+out = capture(lambda: ui.render(result(num_turns=0, text="", cost=0.02)))
 check("R7b hasil lokal seketika tanpa biaya -> diam", "Selesai" not in out, out)
 # R8: jawaban /goal terlambat tidak dianggap hasil prompt user
 ui = mkui(); ui.goal_late = True; ui.turn_future = loop.create_future(); ui.echo_seen = False; ui.turn_prompt = "tulis esai"
@@ -328,5 +331,31 @@ ui = mkui(); ui.prompt.queue.append("/help"); ui.prompt.drain(); check("T8 drain
 # T9: toolbar saat sibuk memuat spinner + status, tanpa crash
 ui = busy_ui(); tb = ui.toolbar(); check("T9 toolbar sibuk: spinner + 'esc untuk berhenti'", "esc untuk berhenti" in tb.value and "shift+tab" in tb.value, tb.value[:200])
 print("\nFAILS (steer additions):", fails or "none")
+
+# ============ C) biaya: total_cost_usd yang dipulihkan mesin saat percakapan dilanjutkan ============
+def res_cost(total, num_turns=1, ms=10):
+    return parse_message({"type": "result", "subtype": "success", "is_error": False, "num_turns": num_turns, "duration_ms": ms,
+                          "duration_api_ms": 5, "result": "ok", "session_id": S, "total_cost_usd": total, "usage": {},
+                          "uuid": "rc", "terminal_reason": "completed"})
+ui = mkui(); ui.result_ours = True
+capture(lambda: ui.on_result(res_cost(0.01))); capture(lambda: ui.on_result(res_cost(0.03)))
+check("C1 proses baru: biaya kumulatif", abs(ui.cost_total - 0.03) < 1e-9, str(ui.cost_total))
+cost = ui.cost_total; ui.reset(); ui.cost_base = cost; ui.attach(None); ui.result_ours = True  # /resume di tengah run
+out = capture(lambda: ui.on_result(res_cost(0.05, num_turns=0)))
+check("C2 resume: biaya lama yang dipulihkan bukan pengeluaran baru, tanpa baris Selesai palsu",
+      abs(ui.cost_total - 0.03) < 1e-9 and "Selesai" not in out, f"{ui.cost_total} {out}")
+out = capture(lambda: ui.on_result(res_cost(0.07)))
+check("C3 giliran sesudah resume: hanya selisihnya", abs(ui.cost_total - 0.05) < 1e-9 and "biaya: $0.0200" in out, out)
+ui.on_reconnect(); ui.attach(None); ui.result_ours = True  # sambung ulang otomatis ke percakapan yang sama
+capture(lambda: ui.on_result(res_cost(0.07, num_turns=0)))
+capture(lambda: ui.on_result(res_cost(0.08)))
+check("C4 sambung ulang: biaya percakapan tidak dihitung dua kali", abs(ui.cost_total - 0.06) < 1e-9, str(ui.cost_total))
+out = capture(lambda: ui.on_result(res_cost(0.09, num_turns=0, ms=1500)))
+check("C5 perintah lokal berbiaya (mis. /compact) tetap dihitung", abs(ui.cost_total - 0.07) < 1e-9 and "Selesai" in out,
+      f"{ui.cost_total} {out}")
+ui.on_reconnect()  # ConversationResetMessage: mesin mulai menghitung dari 0 lagi
+capture(lambda: ui.on_result(res_cost(0.01)))
+check("C6 setelah reset dari mesin: biaya baru ditambahkan", abs(ui.cost_total - 0.08) < 1e-9, str(ui.cost_total))
+print("\nFAILS (cost additions):", fails or "none")
 
 sys.exit(1 if fails else 0)
