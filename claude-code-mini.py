@@ -40,6 +40,8 @@ Pakai:
     claude-code-mini /path/ke/repo -p "/goal semua test di tests/ lulus"   # kerja terus sampai
                                                  # kondisi terpenuhi (exit code 3 kalau belum)
     claude-code-mini /path/ke/repo --yolo        # semua tool tanpa tanya (hati-hati!)
+    claude-code-mini /path/ke/repo --gui         # tampilan GUI di browser (server lokal 127.0.0.1 + token)
+    claude-code-mini /path/ke/repo --gui --no-browser   # di server: buka URL-nya lewat ssh -L 8765:127.0.0.1:8765
     claude-code-mini --setup                     # update library (claude-agent-sdk dkk.)
     git pull && python3 claude-code-mini.py --setup   # di folder clone: update script-nya juga
 
@@ -74,6 +76,7 @@ import atexit
 import base64
 import contextlib
 import difflib
+import html as htmllib
 import inspect
 import io
 import json
@@ -81,6 +84,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import select
 import shlex
 import shutil
@@ -88,6 +92,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 import warnings
 from collections import deque
 from dataclasses import dataclass, field
@@ -1475,6 +1480,7 @@ class UI:
         self.ctx_pct: float | None = None
         self.goal: Goal | None = None  # goal aktif (/goal); hilang saat /clear & /resume, tetap saat sambung ulang
         self.last_goal: Goal | None = None
+        self.plan_file: str | None = None  # file rencana yang terakhir ditulis Claude di plan mode (~/.claude/plans/…)
 
     def on_reconnect(self) -> None:
         """Proses baru setelah error: biaya proses lama disimpan, hitungan proses baru mulai dari 0."""
@@ -1720,7 +1726,7 @@ class UI:
         client = self.client
 
         async def job() -> None:
-            console.print(Text.assemble(("› ", "bold cyan"), (text, "")))
+            self.show_user(text, gap=False)
             if name == "/stop":
                 targets = stop_targets(self, arg)
                 for t in targets:
@@ -1980,6 +1986,25 @@ class UI:
             return "", None  # rencananya ditampilkan di panel persetujuan
         return clip(json.dumps(inp, ensure_ascii=False), 400 if full else 160), None
 
+    # ---------- tampilan pesan (versi GUI: WebUI) ----------
+    def show_text(self, text: str) -> None:
+        """Jawaban Claude (markdown)."""
+        console.print()
+        console.print(Markdown(text))
+        console.print()
+
+    def show_thinking(self, text: str) -> None:
+        lines = text.splitlines()
+        body = "\n".join(lines[:6]) + (f"\n… +{len(lines) - 6} baris" if len(lines) > 6 else "")
+        console.print(Text("✻ Berpikir…", style="dim italic"))
+        console.print(Padding(Text(body, style="dim italic"), (0, 0, 0, 2)))
+
+    def show_user(self, text: str, gap: bool = True) -> None:
+        """Pesan user yang baru diproses (pesan susulan yang dibaca Claude, perintah yang dijalankan saat Claude bekerja)."""
+        if gap:
+            console.print()
+        console.print(Text.assemble(("› ", "bold cyan"), (text, "")))
+
     def print_tool_use(self, block: ToolUseBlock, nested: bool) -> None:
         summary, detail = self.describe_tool(block.name, block.input or {})
         label = TOOL_LABEL.get(block.name, block.name)
@@ -2007,15 +2032,18 @@ class UI:
         return "\n".join(parts)
 
     def print_tool_result(self, block: ToolResultBlock, nested: bool) -> None:
+        msg = self.result_summary(block)
+        if msg is not None:
+            console.print(Padding(Text(f"⎿  {msg}", style="red" if block.is_error else "dim"), (0, 0, 0, 6 if nested else 2)))
+
+    def result_summary(self, block: ToolResultBlock) -> str | None:
+        """Ringkasan hasil tool (baris "⎿ …"); None = tidak perlu ditampilkan."""
         name = self.tool_names.get(block.tool_use_id, "")
         text = self.result_text(block).strip("\n")
-        indent = 6 if nested else 2
         if block.is_error:
-            first = clip(text.splitlines()[0] if text else "gagal", 300)
-            console.print(Padding(Text(f"⎿  Error: {first}", style="red"), (0, 0, 0, indent)))
-            return
+            return "Error: " + clip(text.splitlines()[0] if text else "gagal", 300)
         if name == "TodoWrite":
-            return
+            return None
         task = self.task_by_tool.get(block.tool_use_id)
         if name == "Read":
             msg = f"Membaca {len(text.splitlines())} baris"
@@ -2034,7 +2062,7 @@ class UI:
             if len(lines) > 4:
                 shown.append(f"… +{len(lines) - 4} baris")
             msg = "\n   ".join(shown)
-        console.print(Padding(Text(f"⎿  {msg}", style="dim"), (0, 0, 0, indent)))
+        return msg
 
     @staticmethod
     def agent_result(text: str, task: BgTask | None) -> str:
@@ -2235,18 +2263,16 @@ class UI:
                         self.printed_text = True  # jawaban lokal /goal dari Claude Code -> versi Indonesia
                     else:
                         self.printed_text = True
-                        console.print()
-                        console.print(Markdown(b.text))
-                        console.print()
+                        self.show_text(b.text)
                 elif isinstance(b, ThinkingBlock) and b.thinking.strip():
                     self.spin_stop()
-                    lines = b.thinking.strip().splitlines()
-                    body = "\n".join(lines[:6]) + (f"\n… +{len(lines) - 6} baris" if len(lines) > 6 else "")
-                    console.print(Text("✻ Berpikir…", style="dim italic"))
-                    console.print(Padding(Text(body, style="dim italic"), (0, 0, 0, 2)))
+                    self.show_thinking(b.thinking.strip())
                 elif isinstance(b, ToolUseBlock):
                     self.spin_stop()
                     self.tool_names[b.id] = b.name
+                    path = (b.input or {}).get("file_path") if b.name in ("Write", "Edit", "MultiEdit") else None
+                    if path and Path(str(path)).parent.name == "plans" and str(path).endswith(".md"):
+                        self.plan_file = str(path)
                     self.print_tool_use(b, nested)
                     self.current_tool = b.name
                     if task is not None:  # sub-agent foreground: catat untuk spinner & /tasks
@@ -2272,8 +2298,7 @@ class UI:
                 label = self.take_sent(msg.content)
                 if label is not None:  # pesan susulan baru dibaca Claude -> tampilkan di titik ini
                     self.spin_stop()
-                    console.print()
-                    console.print(Text.assemble(("› ", "bold cyan"), (label, "")))
+                    self.show_user(label)
                     self.checkpoint_label = label
                     self.spin_start(self.current_tool)
                 if msg.uuid and self.checkpoint_label is not None:
@@ -2427,9 +2452,7 @@ class UI:
             self.goal_late = False
         if not self.result_ours:  # giliran otomatis (mis. menanggapi tugas background)
             if not self.printed_text and not msg.is_error and msg.result and msg.result.strip():
-                console.print()
-                console.print(Markdown(msg.result))
-                console.print()
+                self.show_text(msg.result)
             self.printed_text = False
             if local:
                 self.auto_interrupted = False
@@ -2456,9 +2479,7 @@ class UI:
             return
         if local:
             if not self.printed_text and msg.result and msg.result.strip():
-                console.print()
-                console.print(Markdown(msg.result))
-                console.print()
+                self.show_text(msg.result)
             if turn_cost > 0 or msg.duration_ms >= 1000:  # mis. /compact: ada biaya/waktu -> tetap tampilkan
                 console.print(f"[green]✓ Selesai[/][dim]  ·  {stats}[/]")
             return  # jawaban seketika (/goal status, dll): tanpa "✓ Selesai · 0 langkah"
@@ -2479,9 +2500,7 @@ class UI:
         else:
             # Perintah slash yang diteruskan ke Claude (mis. /compact) kadang cuma kirim hasil akhir.
             if not self.printed_text and msg.result and msg.result.strip():
-                console.print()
-                console.print(Markdown(msg.result))
-                console.print()
+                self.show_text(msg.result)
             console.print("[green]✓ Selesai[/]", end="")
         console.print(f"[dim]  ·  {stats}[/]")
         n = len(self.running_bg())
@@ -2723,6 +2742,9 @@ class UI:
         if tool in self.session_allow:
             return PermissionResultAllow()
 
+        if tool == "ExitPlanMode":
+            inp = {**inp, "plan": await self.plan_text(inp)}
+
         def question() -> Any:
             if tool == "ExitPlanMode":
                 return self.ask_plan(inp)
@@ -2747,6 +2769,24 @@ class UI:
             self.keys.resume()
             self.spin_start(self.current_tool)
 
+    async def plan_text(self, inp: dict[str, Any]) -> str:
+        """Isi rencana untuk persetujuan ExitPlanMode. Claude Code versi baru menulis rencananya ke file rencana
+        (~/.claude/plans/…) lalu memanggil ExitPlanMode tanpa argumen; isinya diminta lewat control request
+        "get_plan" (belum ada method-nya di SDK), dengan cadangan membaca file rencana yang terakhir ditulis."""
+        plan = str(inp.get("plan") or "").strip()
+        if plan:
+            return plan
+        query = getattr(self.client, "_query", None)
+        if query is not None and hasattr(query, "_send_control_request"):
+            with contextlib.suppress(Exception):
+                r = await asyncio.wait_for(query._send_control_request({"subtype": "get_plan"}), 5)
+                if isinstance(r, dict) and r.get("exists") and str(r.get("content") or "").strip():
+                    return str(r["content"]).strip()
+        if self.plan_file:
+            with contextlib.suppress(OSError):
+                return Path(self.plan_file).read_text(encoding="utf-8", errors="replace").strip()
+        return ""
+
     def cancelled(self, what: str) -> PermissionResultDeny:
         """Ctrl+C / Ctrl+D di pertanyaan izin = tolak (saat giliran kita: sekalian hentikan Claude)."""
         if not is_terminal(sys.stdin):  # mis. CI / cron: tidak ada yang bisa menjawab pertanyaan izin
@@ -2761,7 +2801,8 @@ class UI:
             self.interrupted = True
         return PermissionResultDeny(message=why, interrupt=self.fg_active)
 
-    def ask_tool(self, tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> Any:
+    def permission_view(self, tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> tuple[str, Any, list[Any], str, str]:
+        """Isi pertanyaan izin: (judul, isi panel, saran izin dari Claude Code, aturan, tempat disimpan)."""
         summary, detail = self.describe_tool(tool, inp, full=True)
         head = Text.assemble((tool, "bold"))
         if summary:
@@ -2776,10 +2817,13 @@ class UI:
         if agent:  # permintaan dari sub-agent: sebutkan agent yang mana
             where = " (background)" if agent.background else ""
             title = f"Agent #{agent.num} “{clip(oneline(agent.desc), 40)}”{where} · {title}"
-        console.print(Panel(Group(*body), title=f"🔐 {title}", title_align="left", border_style="yellow"))
-
         suggestions = getattr(ctx, "suggestions", None) or []
         rules, where = self.describe_suggestions(suggestions)
+        return title, Group(*body), suggestions, rules, where
+
+    def ask_tool(self, tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> Any:
+        title, body, suggestions, rules, where = self.permission_view(tool, inp, ctx)
+        console.print(Panel(body, title=f"🔐 {title}", title_align="left", border_style="yellow"))
         console.print("  [bold]1[/] Ya")
         if rules:
             console.print(f"  [bold]2[/] Ya, dan jangan tanya lagi untuk [bold]{rules}[/]"
@@ -2790,7 +2834,14 @@ class UI:
         ans = ask("[yellow]Pilih[/] [dim]\\[1/2/3, Enter=1][/] › ")
         if ans == CANCEL:
             return self.cancelled(f"Izin {tool}")
+        why = ""
+        if ans not in ("", "1", "y", "ya", "yes", "2", "a", "always", "selalu"):
+            why = ask("[dim]Kasih tahu Claude harus gimana (opsional, Enter untuk lewati):[/] ")
+            ans, why = "no", ("" if why == CANCEL else why)
+        return self.permission_answer(tool, ans, suggestions, rules, why)
 
+    def permission_answer(self, tool: str, ans: str, suggestions: list[Any], rules: str, why: str = "") -> Any:
+        """Jawaban izin -> hasil untuk Claude Code. ans: "1"/"yes" = ya, "2"/"always" = jangan tanya lagi, lainnya = tidak."""
         if ans in ("", "1", "y", "ya", "yes"):
             return PermissionResultAllow()
         if ans in ("2", "a", "always", "selalu"):
@@ -2803,8 +2854,6 @@ class UI:
             self.session_allow.add(tool)
             console.print(f"[dim]✓ {tool} diizinkan tanpa tanya sampai keluar dari script.[/]")
             return PermissionResultAllow()
-        why = ask("[dim]Kasih tahu Claude harus gimana (opsional, Enter untuk lewati):[/] ")
-        why = "" if why == CANCEL else why
         return PermissionResultDeny(message=why or f"User menolak penggunaan {tool}. Tanyakan alternatifnya.")
 
     def ask_plan(self, inp: dict[str, Any]) -> Any:
@@ -2817,6 +2866,13 @@ class UI:
         if ans == CANCEL:
             return self.cancelled("Persetujuan rencana")
         if ans in ("", "1", "y", "ya", "yes", "2"):
+            return self.plan_answer(ans)
+        why = ask("[dim]Apa yang perlu diubah dari rencananya?[/] ")
+        return self.plan_answer("no", "" if why == CANCEL else why)
+
+    def plan_answer(self, ans: str, why: str = "") -> Any:
+        """Jawaban persetujuan rencana: "1" = mulai + auto-terima edit, "2" = mulai + tanya tiap edit, lainnya = tidak."""
+        if ans in ("", "1", "y", "ya", "yes", "2"):
             mode = "default" if ans == "2" else "acceptEdits"
             self.args.mode = mode
             if self.client:  # cadangan kalau CLI tidak memproses updated_permissions
@@ -2827,8 +2883,6 @@ class UI:
             return PermissionResultAllow(
                 updated_permissions=[PermissionUpdate(type="setMode", mode=mode, destination="session")]
             )
-        why = ask("[dim]Apa yang perlu diubah dari rencananya?[/] ")
-        why = "" if why == CANCEL else why
         return PermissionResultDeny(message=why or "User belum setuju dengan rencana ini. Tanyakan apa yang perlu diubah.")
 
     # ---------- fitur input ala Claude Code ----------
@@ -2914,26 +2968,37 @@ class UI:
 
 
 # ---------- daftar & riwayat sesi lama ----------
-def pick_session(repo: Path, exclude: str | None = None) -> str | None:
+def session_list(repo: Path, exclude: str | None = None) -> list[tuple[str, str]]:
+    """Percakapan lama di folder ini: [(session id, keterangan satu baris)], terbaru dulu."""
     if list_sessions is None:
         console.print("[red]SDK terlalu lama untuk /resume. Jalankan: pip install -U claude-agent-sdk[/]")
-        return None
+        return []
     try:
         sessions = [s for s in list_sessions(directory=str(repo), limit=20) if s.session_id != exclude]
     except Exception as e:
         console.print(f"[red]Gagal membaca daftar sesi: {e}[/]")
-        return None
+        return []
     if not sessions:
         console.print("[dim]Belum ada percakapan lama di folder ini.[/]")
+    out = []
+    for s in sessions:
+        title = oneline(s.custom_title or s.summary or s.first_prompt or "(tanpa judul)")
+        branch = f"  ⎇ {s.git_branch}" if s.git_branch else ""
+        out.append((s.session_id, f"{ago(s.last_modified)} · {clip(title, 70)}{branch}"))
+    return out
+
+
+def pick_session(repo: Path, exclude: str | None = None) -> str | None:
+    sessions = session_list(repo, exclude)
+    if not sessions:
         return None
     console.print("[bold]Percakapan lama di folder ini:[/]")
-    for i, s in enumerate(sessions, 1):
-        title = oneline(s.custom_title or s.summary or s.first_prompt or "(tanpa judul)")
-        branch = f" [dim]⎇ {s.git_branch}[/]" if s.git_branch else ""
-        console.print(f"  [bold]{i:>2}[/] [dim]{ago(s.last_modified):>14}[/]  {clip(title, 70)}{branch}")
+    for i, (_, label) in enumerate(sessions, 1):
+        when, _, rest = label.partition(" · ")
+        console.print(f"  [bold]{i:>2}[/] [dim]{when:>14}[/]  {rich_escape(rest)}")
     ans = ask("Pilih nomor [dim](Enter untuk batal)[/] › ")
     if ans.isdigit() and 1 <= int(ans) <= len(sessions):
-        return sessions[int(ans) - 1].session_id
+        return sessions[int(ans) - 1][0]
     return None
 
 
@@ -3009,7 +3074,7 @@ async def run_turn(client: ClaudeSDKClient, ui: UI, prompt: str, label: str | No
         raise ui.pump_error
 
     fut = loop.create_future()
-    tui = ui.turn_task is not None
+    tui = ui.turn_task is not None or getattr(ui, "gui", False)  # GUI: Esc/Stop di browser, Ctrl+C menutup GUI
     release_ctrl_c = None if tui else on_ctrl_c(loop, ui.interrupt_turn)
 
     ui.begin_turn(label)
@@ -3125,7 +3190,9 @@ async def wait_background(ui: UI) -> None:
 
 def confirm_drop_tasks(ui: UI, action: str) -> bool:
     """Giliran yang sedang jalan / tugas background ikut mati kalau proses Claude ditutup (/exit, /clear, /resume)
-    -> tanya dulu."""
+    -> tanya dulu. GUI: browser sudah menanyakannya sebelum mengirim perintah."""
+    if getattr(ui, "gui", False):
+        return True
     n = len(ui.running_bg())
     if ui.busy():
         lead = "Claude masih bekerja" + (f" dan {n} tugas background berjalan" if n else "")
@@ -3296,7 +3363,7 @@ async def handle_command(cmd: str, client: ClaudeSDKClient, ui: UI) -> Any:
         if forwarded:
             console.print("[bold]Perintah Claude Code / proyek[/] [dim](diteruskan ke Claude)[/]:")
             console.print("  " + "  ".join(f"[cyan]{c}[/]" for c in forwarded))
-        console.print(SHORTCUTS_TEXT)
+        console.print(GUI_SHORTCUTS_TEXT if getattr(ui, "gui", False) else SHORTCUTS_TEXT)
     elif name == "/status":
         console.print(
             f"  📂 Folder       {ui.repo}\n"
@@ -3340,7 +3407,10 @@ async def handle_command(cmd: str, client: ClaudeSDKClient, ui: UI) -> Any:
             rules = settings_rules(ui.repo)
             console.print("[bold]Aturan tersimpan:[/] " + ("\n  " + "\n  ".join(rules) if rules else "(belum ada)"))
     elif name == "/resume":
-        sid = pick_session(ui.repo, exclude=ui.session_id)
+        if getattr(ui, "gui", False):
+            sid = await ui.pick_session(exclude=ui.session_id)
+        else:
+            sid = pick_session(ui.repo, exclude=ui.session_id)
         if sid and confirm_drop_tasks(ui, "pindah percakapan"):
             return ("resume", sid)
     elif name == "/rewind":
@@ -3348,10 +3418,15 @@ async def handle_command(cmd: str, client: ClaudeSDKClient, ui: UI) -> Any:
             console.print("[dim]Belum ada titik rewind di percakapan ini.[/]")
             return None
         recent = ui.checkpoints[-10:]
-        console.print("[bold]Kembalikan file ke kondisi sebelum prompt:[/]")
-        for i, (_, label) in enumerate(reversed(recent), 1):
-            console.print(f"  [bold]{i:>2}[/] {clip(oneline(label), 90)}")
-        ans = ask("Pilih nomor [dim](Enter untuk batal)[/] › ")
+        if getattr(ui, "gui", False):
+            pick = await ui.choose("Kembalikan file ke kondisi sebelum prompt:",
+                                   [clip(oneline(label), 90) for _, label in reversed(recent)])
+            ans = str(pick + 1) if pick is not None else ""
+        else:
+            console.print("[bold]Kembalikan file ke kondisi sebelum prompt:[/]")
+            for i, (_, label) in enumerate(reversed(recent), 1):
+                console.print(f"  [bold]{i:>2}[/] {clip(oneline(label), 90)}")
+            ans = ask("Pilih nomor [dim](Enter untuk batal)[/] › ")
         if not (ans.isdigit() and 1 <= int(ans) <= len(recent)):
             return None
         idx = len(ui.checkpoints) - int(ans)
@@ -3476,8 +3551,10 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
     """Satu proses Claude. Return "exit", "clear", "recover" (error), atau ("resume", id)."""
     # asyncio.run (Python 3.11+) membatalkan seluruh sesi saat Ctrl+C; kita mau perilaku klasik:
     # Ctrl+C di pertanyaan singkat = batal menjawab, saat Claude bekerja = hentikan Claude.
-    with contextlib.suppress(ValueError):
-        signal.signal(signal.SIGINT, signal.default_int_handler)
+    # (GUI: Ctrl+C di terminal menutup GUI dengan rapi, diatur run_gui.)
+    if not getattr(ui, "gui", False):
+        with contextlib.suppress(ValueError):
+            signal.signal(signal.SIGINT, signal.default_int_handler)
     client = ClaudeSDKClient(options=build_options(ui, resume_id, continue_last))
     reader: asyncio.Future | None = None
     try:
@@ -3578,7 +3655,10 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
             if prompt == "?":
                 prompt = "/help"
             if prompt.startswith("!"):
-                ui.run_shell(prompt[1:].strip())
+                if getattr(ui, "gui", False):  # GUI tetap responsif selama command berjalan
+                    await asyncio.to_thread(ui.run_shell, prompt[1:].strip())
+                else:
+                    ui.run_shell(prompt[1:].strip())
                 continue
             if prompt.startswith("#") and not prompt.startswith("##") and "\n" not in prompt and prompt[1:].strip():
                 ui.add_memory(prompt[1:].strip())
@@ -3670,6 +3750,1214 @@ def self_command() -> str:
     return f"{PY_CMD} {quote_arg(sys.argv[0])}"
 
 
+# ---------- GUI (--gui): tampilan web lokal di browser ----------
+# Server lokal (Starlette + uvicorn, sudah ikut terpasang bersama claude-agent-sdk) di 127.0.0.1. Logika giliran, izin,
+# goal, tugas background, dan pesan susulan memakai UI yang sama dengan terminal; WebUI cuma mengganti tampilannya.
+# Keamanan: semua request harus membawa token acak (dicetak di terminal), Host/Origin harus loopback, dan API hanya
+# menerima header X-CCMini-Token, jadi halaman web lain tidak bisa menyuruh Claude menjalankan apa pun.
+GUI_PORT = 8765
+GUI_WIDTH = 100  # lebar (kolom) output rich yang dikirim ke browser
+
+GUI_SHORTCUTS_TEXT = """\
+[bold]Di GUI:[/]
+  [cyan]Enter[/] kirim · [cyan]Shift+Enter[/] baris baru · [cyan]Esc[/] hentikan Claude · [cyan]Shift+Tab[/] ganti mode izin
+  [cyan]![/][dim]command[/], [cyan]@[/][dim]path[/], [cyan]#[/][dim] catatan[/], /perintah: sama seperti di terminal ([cyan]Tab[/] melengkapi / dan @)
+  Saat Claude bekerja: pesan biasa dibaca Claude setelah langkah ini; /perintah, !command, # catatan antre
+  (↑ di kolom kosong = pesan terakhir) · pertanyaan izin: klik tombolnya atau tekan 1/2/3
+[bold]Tugas background:[/] progres tampil di bawah · [cyan]/tasks[/] detail & log · [cyan]/stop 2[/] hentikan
+[bold]Goal:[/] [cyan]/goal[/] [dim]kondisi[/] kerja terus sampai terpenuhi · [cyan]/goal[/] status · [cyan]/goal clear[/] batal
+"""
+
+GUI_HTML = r'''<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-code-mini</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='78' font-size='90' text-anchor='middle' fill='%23c2603e'%3E%E2%9C%BB%3C/text%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg:#f8f7f4; --panel:#ffffff; --raised:#fbfaf8; --text:#1f1e1d; --muted:#6d6a64; --faint:#9a968e;
+  --border:#e5e1d8; --accent:#c2603e; --accent-fg:#ffffff; --accent-soft:#f6e9e3; --user:#efebe3; --code:#f3f1ec;
+  --ok:#2e7d32; --err:#b3261e; --link:#1d4ed8; --shadow:0 1px 2px rgba(31,30,29,.06);
+  --c0:#1f1e1d; --c1:#b3261e; --c2:#2e7d32; --c3:#946200; --c4:#1d4ed8; --c5:#8e3fb0; --c6:#0e7490; --c7:#6d6a64; --c8:#8a877f; --c9:#d93025; --c10:#3b8f3f; --c11:#a87500; --c12:#3b6fe0; --c13:#a855c7; --c14:#0891b2; --c15:#1f1e1d;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#1d1c1a; --panel:#262523; --raised:#2b2a27; --text:#ecebe7; --muted:#a8a49c; --faint:#7d7a73;
+    --border:#3a3834; --accent:#d97757; --accent-fg:#1d1c1a; --accent-soft:#3a2b25; --user:#33312d; --code:#2d2b28;
+    --ok:#81c995; --err:#f28b82; --link:#8ab4f8; --shadow:none;
+    --c0:#ecebe7; --c1:#f28b82; --c2:#81c995; --c3:#f2c94c; --c4:#8ab4f8; --c5:#d7aefb; --c6:#78d9ec; --c7:#bdb9b1; --c8:#8a877f; --c9:#ff9a90; --c10:#a6e3b5; --c11:#ffd772; --c12:#a8c7fa; --c13:#e3c2ff; --c14:#9fe5f2; --c15:#ffffff;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 12px; padding: 9px 16px; border-bottom: 1px solid var(--border);
+  background: var(--panel); flex-wrap: wrap; }
+.brand { font-weight: 600; display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.brand .star { color: var(--accent); font-size: 19px; line-height: 1; }
+.repo { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+button { font: inherit; font-size: 13px; border: 1px solid var(--border); background: var(--raised); color: var(--text);
+  border-radius: 8px; padding: 5px 11px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--faint); }
+button:disabled { opacity: .55; cursor: default; }
+button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+button.danger { color: var(--err); }
+main { flex: 1; overflow-y: auto; }
+#chat { max-width: 940px; margin: 0 auto; padding: 22px 16px 30px; display: flex; flex-direction: column; gap: 12px; }
+.empty { color: var(--muted); text-align: center; margin-top: 14vh; line-height: 1.8; }
+.empty .big { font-size: 34px; color: var(--accent); }
+.empty small { color: var(--faint); }
+.user { align-self: flex-end; max-width: 85%; background: var(--user); border-radius: 14px; padding: 8px 14px;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md pre { background: var(--code); padding: 10px 12px; border-radius: 8px; overflow: auto; font: 13px/1.5 var(--mono); }
+.md code { font: 13px var(--mono); background: var(--code); padding: 1px 5px; border-radius: 5px; }
+.md pre code { background: none; padding: 0; }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--border); padding: 4px 9px; }
+.md a { color: var(--link); }
+.md blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
+details.thinking { color: var(--muted); font-style: italic; font-size: 14px; }
+details.thinking summary { cursor: pointer; }
+details.thinking div { white-space: pre-wrap; padding: 4px 0 0 18px; }
+.tool { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+.tool.nested { margin-left: 28px; }
+.tool .head { display: flex; gap: 8px; align-items: baseline; padding: 7px 12px; font-size: 14px; }
+.tool .dot { color: var(--ok); } .tool.nested .dot { color: var(--c5); } .tool.err .dot { color: var(--err); }
+.tool.run .dot { color: var(--faint); animation: blink 1.2s infinite; }
+.tool .name { font-weight: 600; white-space: nowrap; }
+.tool .sum { font-family: var(--mono); font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.tool pre, pre.log, .ask pre { margin: 0; font: 12.5px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool .detail { padding: 0 12px 8px 30px; }
+.tool .result { border-top: 1px dashed var(--border); padding: 6px 12px 8px 30px; color: var(--muted); }
+.tool .result.err { color: var(--err); }
+.tool details summary { cursor: pointer; font-size: 12px; color: var(--faint); margin-top: 4px; }
+.tool details pre { max-height: 360px; overflow: auto; background: var(--code); padding: 8px; border-radius: 6px; margin-top: 4px; color: var(--text); }
+pre.log { padding: 0 2px; }
+.ask { border: 1.5px solid var(--accent); background: var(--panel); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow); }
+.ask .title { font-weight: 600; margin-bottom: 8px; }
+.ask .body { background: var(--code); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; max-height: 50vh; overflow: auto; }
+.ask .opts { display: flex; flex-direction: column; gap: 6px; }
+.ask .opts button { text-align: left; padding: 7px 12px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.ask .opts kbd { font: 12px var(--mono); color: var(--faint); }
+.ask .opts small { color: var(--muted); }
+.ask .opts button.chosen { border-color: var(--accent); background: var(--accent-soft); opacity: 1; }
+.ask.done { border-color: var(--border); }
+.ask.done .opts button:not(.chosen) { display: none; }
+.ask .reason { display: flex; gap: 6px; margin-top: 8px; }
+.ask .reason input { flex: 1; font: inherit; font-size: 14px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); min-width: 0; }
+.answer { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.banner { background: var(--accent-soft); color: var(--text); border-bottom: 1px solid var(--border); padding: 8px 16px; font-size: 14px; text-align: center; }
+.banner.err { color: var(--err); }
+#dock { border-top: 1px solid var(--border); background: var(--panel); }
+#dock .inner { max-width: 940px; margin: 0 auto; padding: 8px 16px 10px; }
+#working { display: flex; align-items: center; gap: 10px; padding: 1px 0 7px; }
+#working .spin { width: 13px; height: 13px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite; flex: none; }
+#working .txt { flex: 1; min-width: 0; font: 12.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#working button { padding: 3px 10px; }
+.rows { font: 12.5px/1.5 var(--mono); color: var(--muted); padding-bottom: 5px; }
+.rows:empty { display: none; }
+.rows div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer { position: relative; display: flex; gap: 8px; align-items: flex-end; }
+textarea { flex: 1; resize: none; font: 15px/1.45 var(--sans); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); max-height: 40vh; min-height: 44px; }
+#send { height: 44px; padding: 0 18px; }
+#sugg { position: absolute; left: 0; right: 86px; bottom: 100%; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.14); max-height: 280px; overflow: auto; z-index: 5; }
+#sugg div { padding: 6px 10px; font: 13px var(--mono); cursor: pointer; display: flex; gap: 14px; }
+#sugg div span { color: var(--muted); font-family: var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sugg div.on { background: var(--accent-soft); }
+footer { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12.5px; color: var(--muted); padding-top: 8px; }
+footer select { font: inherit; font-size: 12.5px; background: var(--raised); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 2px 4px; max-width: 260px; }
+footer select.yolo { color: var(--err); font-weight: 600; }
+#conn::before { content: "● "; color: var(--ok); } #conn.lost::before { color: var(--err); }
+[hidden] { display: none !important; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes blink { 50% { opacity: .3; } }
+.b { font-weight: 600; } .d { opacity: .62; } .i { font-style: italic; } .u { text-decoration: underline; } .s { text-decoration: line-through; }
+.c0{color:var(--c0)}.c1{color:var(--c1)}.c2{color:var(--c2)}.c3{color:var(--c3)}.c4{color:var(--c4)}.c5{color:var(--c5)}.c6{color:var(--c6)}.c7{color:var(--c7)}.c8{color:var(--c8)}.c9{color:var(--c9)}.c10{color:var(--c10)}.c11{color:var(--c11)}.c12{color:var(--c12)}.c13{color:var(--c13)}.c14{color:var(--c14)}.c15{color:var(--c15)}.bg0{background:var(--c0)}.bg1{background:var(--c1)}.bg2{background:var(--c2)}.bg3{background:var(--c3)}.bg4{background:var(--c4)}.bg5{background:var(--c5)}.bg6{background:var(--c6)}.bg7{background:var(--c7)}.bg8{background:var(--c8)}.bg9{background:var(--c9)}.bg10{background:var(--c10)}.bg11{background:var(--c11)}.bg12{background:var(--c12)}.bg13{background:var(--c13)}.bg14{background:var(--c14)}.bg15{background:var(--c15)}
+@media (max-width: 640px) {
+  body { font-size: 14px; } .user { max-width: 95%; } .tool.nested { margin-left: 10px; }
+  .tool .detail, .tool .result { padding-left: 12px; } #chat { padding: 14px 10px 24px; } #dock .inner { padding: 8px 10px 10px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="star">✻</span>claude-code-mini</div>
+  <div class="repo" id="repo"></div>
+  <div class="actions">
+    <button data-cmd="/clear" title="Mulai percakapan baru (konteks lama dibuang)">Baru</button>
+    <button data-cmd="/resume" title="Lanjutkan percakapan lama di folder ini">Riwayat</button>
+    <button data-cmd="/rewind" title="Kembalikan file ke kondisi sebelum prompt tertentu">Rewind</button>
+    <button data-cmd="/help">Bantuan</button>
+    <button data-cmd="/exit" class="danger" title="Tutup claude-code-mini (percakapan tetap tersimpan)">Keluar</button>
+  </div>
+</header>
+<div id="banner" class="banner" hidden></div>
+<main id="main"><div id="chat"></div></main>
+<div id="dock"><div class="inner">
+  <div id="working" hidden aria-live="polite"><div class="spin"></div><div class="txt" id="workingText"></div>
+    <button id="stop" class="danger" title="Hentikan Claude (Esc)">■ Stop</button></div>
+  <div class="rows" id="rows"></div>
+  <div class="composer">
+    <div id="sugg" hidden></div>
+    <textarea id="input" rows="1" aria-label="Pesan" autofocus></textarea>
+    <button id="send" class="primary" title="Kirim (Enter)">Kirim</button>
+  </div>
+  <footer>
+    <label>Mode <select id="mode" title="Ganti mode izin (Shift+Tab)"></select></label>
+    <label>Model <select id="model"></select></label>
+    <span id="ctx"></span><span id="cost"></span><span id="goal"></span>
+    <span id="conn">menyambung…</span>
+  </footer>
+</div></div>
+<script>
+(() => {
+"use strict";
+const TOKEN = __CCM_TOKEN__;
+const $ = (id) => document.getElementById(id);
+const chat = $("chat"), main = $("main"), input = $("input"), sugg = $("sugg");
+const st = { busy: false, asking: false, tasks: [], modes: {}, cycle: [], models: {}, name: "", mode: "", model: "" };
+const tools = new Map(), asks = new Map(), sent = [];
+let lastSeq = 0, lastLog = null, es = null, closed = false, histIdx = -1;
+let suggItems = [], suggIdx = 0, suggTimer = null;
+
+if (location.search) history.replaceState(null, "", location.pathname);  // token tidak terlihat di address bar
+
+function post(action, body) {
+  return fetch("/api/" + action, { method: "POST", headers: { "Content-Type": "application/json", "X-CCMini-Token": TOKEN },
+    body: JSON.stringify(body || {}) }).then(r => r.json()).catch(() => ({}));
+}
+function mk(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function nearBottom() { return main.scrollHeight - main.scrollTop - main.clientHeight < 160; }
+function toBottom(stick) { if (stick) main.scrollTop = main.scrollHeight; }
+function add(node, isLog) {
+  const stick = nearBottom();
+  const empty = chat.querySelector(".empty");
+  if (empty) empty.remove();
+  chat.appendChild(node);
+  lastLog = isLog ? node : null;
+  toBottom(stick);
+  return node;
+}
+function emptyState() {
+  const d = mk("div", "empty");
+  d.appendChild(mk("div", "big", "✻"));
+  d.appendChild(mk("div", null, "Ketik pesan di bawah untuk mulai."));
+  d.appendChild(mk("small", null, "/ perintah · @ lampirkan file · ! jalankan command · # simpan catatan ke CLAUDE.md"));
+  return d;
+}
+function links(root) { root.querySelectorAll("a[href]").forEach(a => { a.target = "_blank"; a.rel = "noopener noreferrer"; }); }
+function banner(text, kind) {
+  const b = $("banner");
+  b.hidden = !text; b.textContent = text || ""; b.className = "banner" + (kind ? " " + kind : "");
+}
+function title() {
+  const pre = asks.size ? "🔐 " : st.busy ? "⏳ " : "";
+  document.title = pre + (st.name ? st.name + " · " : "") + "claude-code-mini";
+}
+
+// ---------- event dari claude-code-mini ----------
+const H = {
+  user(ev) { add(mk("div", "user", ev.text)); },
+  assistant(ev) { const d = mk("div", "md"); d.innerHTML = ev.html; links(d); add(d); },
+  thinking(ev) {
+    const d = mk("details", "thinking");
+    d.appendChild(mk("summary", null, "✻ Berpikir…"));
+    d.appendChild(mk("div", null, ev.text));
+    add(d);
+  },
+  tool(ev) {
+    const card = mk("div", "tool run" + (ev.nested ? " nested" : ""));
+    const head = mk("div", "head");
+    head.appendChild(mk("span", "dot", "●"));
+    head.appendChild(mk("span", "name", ev.name));
+    if (ev.summary) head.appendChild(mk("span", "sum", ev.summary));
+    card.appendChild(head);
+    if (ev.detail) { const pre = mk("pre", "detail"); pre.innerHTML = ev.detail; card.appendChild(pre); }
+    tools.set(ev.id, card);
+    add(card);
+  },
+  tool_result(ev) {
+    const box = mk("div", "result" + (ev.error ? " err" : ""));
+    box.appendChild(mk("pre", null, "⎿  " + ev.summary));
+    if (ev.full) {
+      const d = mk("details");
+      d.appendChild(mk("summary", null, "Lihat output lengkap"));
+      d.appendChild(mk("pre", null, ev.full));
+      box.appendChild(d);
+    }
+    const card = tools.get(ev.id);
+    if (!card) { add(box); return; }
+    const stick = nearBottom();
+    card.classList.remove("run");
+    if (ev.error) card.classList.add("err");
+    card.appendChild(box);
+    toBottom(stick);
+  },
+  log(ev) {
+    if (lastLog && lastLog === chat.lastElementChild) {
+      const stick = nearBottom();
+      lastLog.insertAdjacentHTML("beforeend", ev.html);
+      toBottom(stick);
+      return;
+    }
+    const pre = mk("pre", "log");
+    pre.innerHTML = ev.html;
+    add(pre, true);
+  },
+  ask(ev) {
+    const card = mk("div", "ask");
+    card.appendChild(mk("div", "title", ev.title));
+    if (ev.body) {
+      const plan = ev.kind === "plan";
+      const b = mk(plan ? "div" : "pre", "body" + (plan ? " md" : ""));
+      b.innerHTML = ev.body;
+      if (plan) links(b);
+      card.appendChild(b);
+    }
+    const opts = mk("div", "opts");
+    ev.options.forEach((o, i) => {
+      const btn = mk("button");
+      btn.dataset.value = o.value;
+      btn.appendChild(mk("kbd", null, String(i + 1)));
+      btn.appendChild(mk("span", null, o.label));
+      if (o.note) btn.appendChild(mk("small", null, "(" + o.note + ")"));
+      btn.onclick = () => choose(ev.id, o);
+      opts.appendChild(btn);
+    });
+    card.appendChild(opts);
+    asks.set(ev.id, { card, ev });
+    add(card);
+    if (!input.value) opts.firstChild.focus({ preventScroll: true });
+    title();
+  },
+  answered(ev) {
+    const a = asks.get(ev.id);
+    if (!a) return;
+    asks.delete(ev.id);
+    a.card.classList.add("done");
+    a.card.querySelectorAll(".opts button").forEach(b => {
+      b.disabled = true;
+      if (b.dataset.value === String(ev.value)) b.classList.add("chosen");
+    });
+    const r = a.card.querySelector(".reason");
+    if (r) r.remove();
+    a.card.appendChild(mk("div", "answer", "→ " + ev.label));
+    if (document.activeElement === document.body || a.card.contains(document.activeElement)) input.focus({ preventScroll: true });
+    title();
+  },
+  status(s) {
+    st.busy = s.busy; st.asking = s.asking; st.tasks = s.tasks || []; st.mode = s.mode; st.model = s.model;
+    $("working").hidden = !(s.busy || s.asking);
+    $("workingText").textContent = s.working || (s.asking ? "Menunggu jawabanmu…" : "Claude bekerja…");
+    const rows = $("rows");
+    rows.textContent = "";
+    (s.pending || []).forEach(t => rows.appendChild(mk("div", null, "⏳ dibaca Claude setelah langkah ini: " + t)));
+    (s.queued || []).forEach(t => rows.appendChild(mk("div", null, "⏳ setelah giliran selesai: " + t)));
+    (s.tasks || []).forEach(t => rows.appendChild(mk("div", null, t)));
+    selects();
+    $("ctx").textContent = s.ctx == null ? "" : "konteks " + s.ctx + "%";
+    $("cost").textContent = s.cost || "";
+    $("goal").textContent = s.goal || "";
+    input.placeholder = s.busy
+      ? "Ketik pesan susulan… Enter = kirim (dibaca Claude setelah langkah ini) · Esc = hentikan"
+      : "Ketik pesan… Enter kirim · Shift+Enter baris baru · / perintah · @ file · ! command";
+    title();
+  },
+  fatal(ev) { banner(ev.text, "err"); },
+  bye() {
+    closed = true;
+    if (es) es.close();
+    banner("claude-code-mini sudah berhenti. Jalankan lagi dari terminal untuk melanjutkan percakapan.", "err");
+    $("conn").textContent = "berhenti"; $("conn").classList.add("lost");
+    input.disabled = true; $("send").disabled = true; $("working").hidden = true;
+  },
+};
+
+function handle(ev) {
+  if (ev.type === "hello") {
+    chat.textContent = ""; chat.appendChild(emptyState());
+    tools.clear(); asks.clear(); lastLog = null; lastSeq = 0;
+    st.modes = ev.modes || {}; st.cycle = ev.cycle || []; st.models = ev.models || {}; st.name = ev.name || "";
+    $("repo").textContent = "📂 " + ev.repo; $("repo").title = ev.repo;
+    title();
+    return;
+  }
+  if (ev.seq) { if (ev.seq <= lastSeq) return; lastSeq = ev.seq; }
+  const f = H[ev.type];
+  if (f) f(ev);
+}
+
+function connect() {
+  es = new EventSource("/events?t=" + encodeURIComponent(TOKEN));
+  es.onopen = () => { $("conn").textContent = "terhubung"; $("conn").classList.remove("lost"); if (!closed) banner(""); };
+  es.onerror = () => {
+    if (closed) return;
+    $("conn").textContent = "terputus"; $("conn").classList.add("lost");
+    banner("Koneksi ke claude-code-mini terputus — mencoba lagi…", "err");
+  };
+  es.onmessage = (e) => {
+    let ev;
+    try { ev = JSON.parse(e.data); } catch (err) { return; }
+    try { handle(ev); } catch (err) { console.error(err); }
+  };
+}
+
+// ---------- pertanyaan izin / pilihan ----------
+function choose(id, o) {
+  const a = asks.get(id);
+  if (!a) return;
+  if (o.value === "no" && a.ev.reason) {
+    if (a.card.querySelector(".reason")) { a.card.querySelector(".reason input").focus(); return; }
+    const row = mk("div", "reason");
+    const inp = mk("input");
+    inp.placeholder = a.ev.reason;
+    const go = mk("button", "primary", "Kirim");
+    const submit = () => post("answer", { id, value: "no", reason: inp.value.trim() });
+    go.onclick = submit;
+    inp.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); row.remove(); }
+    };
+    row.appendChild(inp); row.appendChild(go);
+    a.card.appendChild(row);
+    inp.focus();
+    return;
+  }
+  post("answer", { id, value: o.value });
+}
+
+// ---------- kolom chat ----------
+function autosize() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight + 2, window.innerHeight * 0.4) + "px";
+}
+function guard(cmd) {
+  const word = cmd.split(/\s/)[0].toLowerCase();
+  if (["/clear", "/resume", "/exit", "/quit"].includes(word) && (st.busy || st.tasks.length))
+    return confirm("Claude masih bekerja atau ada tugas background; " + word + " akan menghentikannya. Lanjut?");
+  return true;
+}
+function send() {
+  const text = input.value.trim();
+  if (!text || !guard(text)) return;
+  post("send", { text });
+  sent.push(text); histIdx = -1;
+  input.value = ""; autosize(); hideSugg();
+}
+document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {
+  const cmd = b.dataset.cmd;
+  if (cmd === "/exit" && !confirm("Tutup claude-code-mini? Percakapan tetap tersimpan dan bisa dilanjutkan nanti.")) return;
+  if (!guard(cmd)) return;
+  post("send", { text: cmd });
+});
+$("send").onclick = send;
+$("stop").onclick = () => post("stop");
+$("mode").onchange = (e) => post("mode", { mode: e.target.value });
+$("model").onchange = (e) => post("model", { model: e.target.value });
+
+function selects() {
+  const m = $("mode"), want = st.cycle.slice();
+  if (st.mode && !want.includes(st.mode)) want.push(st.mode);
+  if (m.dataset.sig !== want.join()) {
+    m.textContent = "";
+    want.forEach(k => { const o = mk("option", null, st.modes[k] || k); o.value = k; m.appendChild(o); });
+    m.dataset.sig = want.join();
+  }
+  m.value = st.mode;
+  m.classList.toggle("yolo", st.mode === "bypassPermissions");
+  const md = $("model"), entries = Object.entries(st.models);
+  if (st.model && !entries.some(([, v]) => v === st.model)) entries.push([st.model, st.model]);
+  const sig = entries.map(e => e.join("=")).join();
+  if (md.dataset.sig !== sig) {
+    md.textContent = "";
+    entries.forEach(([k, v]) => { const o = mk("option", null, k === v ? v : k + " · " + v); o.value = v; md.appendChild(o); });
+    md.dataset.sig = sig;
+  }
+  md.value = st.model;
+}
+
+// saran /perintah dan @path
+function hideSugg() { sugg.hidden = true; suggItems = []; }
+function scheduleSugg() { clearTimeout(suggTimer); suggTimer = setTimeout(updateSugg, 90); }
+async function updateSugg() {
+  const before = input.value.slice(0, input.selectionStart);
+  const word = (before.match(/\S*$/) || [""])[0];
+  if (!((word.startsWith("/") && before.trimStart() === word) || word.startsWith("@"))) { hideSugg(); return; }
+  const r = await post("complete", { text: before });
+  if (input.value.slice(0, input.selectionStart) !== before) return;  // sudah berubah lagi
+  suggItems = r.items || []; suggIdx = 0;
+  if (!suggItems.length) { hideSugg(); return; }
+  sugg.textContent = "";
+  suggItems.forEach((it, i) => {
+    const d = mk("div", i === 0 ? "on" : null);
+    d.appendChild(document.createTextNode(it.label));
+    if (it.meta) d.appendChild(mk("span", null, it.meta));
+    d.onmousedown = (e) => { e.preventDefault(); applySugg(it); };
+    sugg.appendChild(d);
+  });
+  sugg.hidden = false;
+}
+function moveSugg(d) {
+  suggIdx = (suggIdx + d + suggItems.length) % suggItems.length;
+  [...sugg.children].forEach((c, i) => c.classList.toggle("on", i === suggIdx));
+  sugg.children[suggIdx].scrollIntoView({ block: "nearest" });
+}
+function applySugg(it) {
+  const pos = input.selectionStart, before = input.value.slice(0, pos), after = input.value.slice(pos);
+  const word = (before.match(/\S*$/) || [""])[0], start = before.length - word.length;
+  input.value = before.slice(0, start) + it.value + after;
+  const np = start + it.value.length;
+  input.setSelectionRange(np, np);
+  hideSugg(); autosize(); input.focus();
+  if (it.value.endsWith("/") || it.value.endsWith("\\")) scheduleSugg();  // folder: lanjut ke isinya
+}
+
+input.addEventListener("input", () => { autosize(); scheduleSugg(); });
+input.addEventListener("blur", () => setTimeout(hideSugg, 150));
+input.addEventListener("keydown", (e) => {
+  if (!sugg.hidden && suggItems.length) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveSugg(e.key === "ArrowDown" ? 1 : -1); return; }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+      const it = suggItems[suggIdx];
+      const word = (input.value.slice(0, input.selectionStart).match(/\S*$/) || [""])[0];
+      if (!(e.key === "Enter" && word === it.label)) { e.preventDefault(); applySugg(it); return; }
+    }
+    if (e.key === "Escape") { e.preventDefault(); hideSugg(); return; }
+  }
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); return; }
+  if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); post("mode", { mode: "cycle" }); return; }
+  if (e.key === "Escape") { if (st.busy || st.asking) { e.preventDefault(); post("stop"); } return; }
+  if (e.key === "ArrowUp" && !input.value && sent.length) {
+    e.preventDefault(); histIdx = histIdx < 0 ? sent.length - 1 : Math.max(0, histIdx - 1);
+    input.value = sent[histIdx]; autosize();
+  } else if (e.key === "ArrowDown" && histIdx >= 0 && input.selectionStart === input.value.length) {
+    e.preventDefault(); histIdx += 1;
+    input.value = histIdx < sent.length ? sent[histIdx] : ""; if (histIdx >= sent.length) histIdx = -1; autosize();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  const t = e.target, typing = t === input || t.tagName === "INPUT" || t.tagName === "SELECT";
+  if (typing) return;
+  if (e.key === "Escape" && (st.busy || st.asking)) { e.preventDefault(); post("stop"); return; }
+  if (/^[1-9]$/.test(e.key) && asks.size) {
+    const a = [...asks.values()].pop(), o = a.ev.options[Number(e.key) - 1];
+    if (o) { e.preventDefault(); choose(a.ev.id, o); }
+    return;
+  }
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) input.focus();
+});
+
+chat.appendChild(emptyState());
+autosize();
+connect();
+})();
+</script>
+</body>
+</html>
+'''
+
+GUI_LOCKED_HTML = r'''<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-code-mini</title>
+<style>body{font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f8f7f4;color:#1f1e1d;display:flex;
+align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px;box-sizing:border-box}
+@media (prefers-color-scheme: dark){body{background:#1d1c1a;color:#ecebe7}}
+div{max-width:560px}b{color:#c2603e}</style></head>
+<body><div><p><b>✻ claude-code-mini</b></p>
+<p>Halaman ini butuh token. Buka lewat URL lengkap yang dicetak di terminal saat menjalankan
+<code>claude-code-mini --gui</code> (alamat yang berakhiran <code>/?t=…</code>).</p></div></body></html>
+'''
+
+_HTML_CONSOLE: Any = None
+_MD: Any = None
+
+
+def segments_html(segments: Any) -> str:
+    """Segment rich -> HTML. Warna standar jadi kelas c0..c15 (warnanya mengikuti tema terang/gelap halaman)."""
+    out = []
+    for seg in segments:
+        text, style, control = seg.text, seg.style, seg.control
+        if control or not text:
+            continue
+        t = htmllib.escape(text, quote=False)
+        if not style:
+            out.append(t)
+            continue
+        cls, css = [], []
+        for flag, c in (("bold", "b"), ("dim", "d"), ("italic", "i"), ("underline", "u"), ("strike", "s")):
+            if getattr(style, flag):
+                cls.append(c)
+        for prefix, color in (("c", style.color), ("bg", style.bgcolor)):
+            if color is None or color.is_default:
+                continue
+            if color.number is not None and color.number < 16:
+                cls.append(f"{prefix}{color.number}")
+            else:
+                r, g, b = color.get_truecolor()
+                css.append(f"{'color' if prefix == 'c' else 'background'}:#{r:02x}{g:02x}{b:02x}")
+        attrs = (f' class="{" ".join(cls)}"' if cls else "") + (f' style="{";".join(css)}"' if css else "")
+        out.append(f"<span{attrs}>{t}</span>" if attrs else t)
+    return "".join(out)
+
+
+def rich_html(renderable: Any, width: int = GUI_WIDTH) -> str:
+    """Renderable rich (diff, todo, panel) -> HTML untuk browser."""
+    global _HTML_CONSOLE
+    if _HTML_CONSOLE is None:
+        _HTML_CONSOLE = Console(file=io.StringIO(), force_terminal=True, color_system="truecolor", width=width,
+                                highlight=False, legacy_windows=False)
+    c = _HTML_CONSOLE
+    return segments_html(c.render(renderable, c.options.update(width=width)))
+
+
+def md_html(text: str) -> str:
+    """Markdown jawaban Claude -> HTML. HTML mentah di teksnya di-escape (tidak dijalankan browser)."""
+    global _MD
+    if _MD is None:
+        from markdown_it import MarkdownIt
+
+        _MD = MarkdownIt("commonmark", {"html": False, "breaks": True}).enable(["table", "strikethrough"])
+    return _MD.render(text)
+
+
+class _NullFile(io.TextIOBase):
+    def write(self, s: str) -> int:
+        return len(s)
+
+
+class WebConsole(Console):
+    """`console` di mode GUI: setiap console.print dikirim ke browser sebagai potongan HTML (event "log"),
+    tidak ke terminal. Warna, panel, dan diff rich tetap terlihat."""
+
+    def __init__(self, emit: Any):
+        super().__init__(file=_NullFile(), record=True, force_terminal=True, color_system="truecolor",
+                         width=GUI_WIDTH, highlight=False, legacy_windows=False)
+        self._emit = emit
+
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        super().print(*objects, **kwargs)
+        with self._record_buffer_lock:
+            segments = list(self._record_buffer)
+            del self._record_buffer[:]
+        html = segments_html(segments)
+        if html.strip():
+            self._emit("log", {"html": html})
+
+
+class WebHub:
+    """Event dari UI ke semua tab browser (Server-Sent Events). Riwayatnya disimpan, jadi tab yang baru dibuka atau
+    di-reload langsung menampilkan percakapan yang sedang berjalan. Aman dipanggil dari thread lain."""
+
+    def __init__(self) -> None:
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.log: deque[dict[str, Any]] = deque(maxlen=5000)
+        self.clients: set[asyncio.Queue] = set()
+        self.seq = 0
+        self.status: dict[str, Any] | None = None
+
+    def emit(self, kind: str, data: dict[str, Any] | None = None) -> None:
+        loop = self.loop
+        if loop is None or loop.is_closed():
+            return
+        ev = {"type": kind, **(data or {})}
+        try:
+            same = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            same = False
+        if same:
+            self._push(ev)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._push, ev)
+
+    def _push(self, ev: dict[str, Any]) -> None:
+        self.seq += 1
+        ev["seq"] = self.seq
+        if ev["type"] == "status":
+            self.status = ev
+        else:
+            self.log.append(ev)
+        for q in list(self.clients):
+            q.put_nowait(ev)
+
+    def close(self) -> None:
+        for q in list(self.clients):
+            q.put_nowait(None)
+
+
+class _NoKeys:
+    """Pengganti KeyWatcher di mode GUI (tombol dibaca di browser, bukan di terminal)."""
+
+    def start(self, *args: Any) -> None:
+        pass
+
+    pause = resume = stop = start
+
+    def take_typeahead(self) -> str:
+        return ""
+
+
+class WebPrompt:
+    """Pengganti PromptInput di mode GUI: pesan datang dari browser (POST /api/send), bukan dari keyboard."""
+
+    def __init__(self, ui: "WebUI"):
+        self.ui = ui
+        self.repo = ui.repo
+        self.commands: dict[str, str] = dict(LOCAL_COMMANDS)
+        self.interactive = True  # giliran jalan sebagai task: browser tetap bisa mengirim pesan susulan
+        self.queue: deque[str] = deque()  # ketikan saat Claude bekerja yang menunggu giliran selesai
+        self.inbox: asyncio.Queue | None = None
+        self._paths = PromptInput(ui)  # dipakai untuk melengkapi @path
+
+    def _box(self) -> asyncio.Queue:
+        if self.inbox is None:
+            self.inbox = asyncio.Queue()
+        return self.inbox
+
+    def active(self) -> bool:
+        return False
+
+    def submit(self, text: str) -> None:
+        self._box().put_nowait(text)
+
+    async def read(self, prefill: str = "") -> str:
+        box = self._box()
+        while True:
+            err, self.ui.turn_error = self.ui.turn_error, None
+            if err is not None:
+                raise err
+            if self.queue and not self.ui.busy():  # antrean dari saat Claude bekerja
+                text = self.queue.popleft()
+                self.ui.show_user(text)
+                return text
+            item = await box.get()
+            if item is DRAIN:
+                continue
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    def drain(self) -> None:
+        if self.queue and not self.ui.busy():
+            self._box().put_nowait(DRAIN)
+
+    async def run_above(self, func: Any) -> Any:
+        return func()
+
+    async def above(self, func: Any) -> Any:
+        r = func()
+        return await r if inspect.isawaitable(r) else r
+
+    def abort(self, err: BaseException) -> None:
+        self._box().put_nowait(err)
+
+    def stop(self) -> None:
+        pass
+
+    def path_matches(self, text: str) -> list[str]:
+        return self._paths.path_matches(text)
+
+
+class WebUI(UI):
+    """UI untuk mode --gui. Pesan, tool, dan pertanyaan izin dikirim ke browser sebagai event terstruktur;
+    output lain (console.print) sebagai potongan HTML lewat WebConsole."""
+
+    gui = True
+
+    def __init__(self, repo: Path, args: argparse.Namespace, hub: WebHub):
+        self.hub = hub
+        self.waiters: dict[str, asyncio.Future] = {}
+        self.ask_seq = 0
+        super().__init__(repo, args)
+        self.prompt = WebPrompt(self)  # type: ignore[assignment]
+        self.keys = _NoKeys()  # type: ignore[assignment]
+
+    # --- tampilan ---
+    def spin_start(self, tool: str | None = None) -> None:
+        self.current_tool = tool  # spinner digambar browser dari event status
+
+    def spin_stop(self) -> None:
+        pass
+
+    def show_text(self, text: str) -> None:
+        self.hub.emit("assistant", {"html": md_html(text)})
+
+    def show_thinking(self, text: str) -> None:
+        self.hub.emit("thinking", {"text": clip(text, 20000)})
+
+    def show_user(self, text: str, gap: bool = True) -> None:
+        self.hub.emit("user", {"text": text})
+
+    def print_tool_use(self, block: ToolUseBlock, nested: bool) -> None:
+        summary, detail = self.describe_tool(block.name, block.input or {})
+        self.hub.emit("tool", {"id": block.id, "name": TOOL_LABEL.get(block.name, block.name), "summary": summary,
+                               "detail": rich_html(detail) if detail is not None else "", "nested": nested})
+
+    def print_tool_result(self, block: ToolResultBlock, nested: bool) -> None:
+        name = self.tool_names.get(block.tool_use_id, "")
+        msg = self.result_summary(block)
+        if msg is None:
+            return
+        full = "" if name in ("Read", "Edit", "MultiEdit", "Write", "NotebookEdit") else self.result_text(block).strip("\n")
+        if full.strip() == msg.strip() or (not block.is_error and len(full.splitlines()) <= 4 and len(full) <= 720):
+            full = ""  # ringkasannya sudah memuat semuanya
+        self.hub.emit("tool_result", {"id": block.tool_use_id, "summary": msg, "error": bool(block.is_error),
+                                      "full": clip(full, 30000), "nested": nested})
+
+    # --- pertanyaan (izin, rencana, pilihan) ---
+    async def ask_web(self, kind: str, title: str, body: str = "", options: Any = (),
+                      reason: str | None = None) -> tuple[str | None, str]:
+        """Tampilkan pertanyaan di browser dan tunggu jawabannya: (nilai pilihan atau None kalau dibatalkan, alasan)."""
+        self.ask_seq += 1
+        qid = f"q{self.ask_seq}"
+        fut = asyncio.get_running_loop().create_future()
+        self.waiters[qid] = fut
+        opts = [{"value": o[0], "label": o[1], "note": o[2] if len(o) > 2 else ""} for o in options]
+        self.hub.emit("ask", {"id": qid, "kind": kind, "title": title, "body": body, "options": opts, "reason": reason})
+        try:
+            value, why = await fut
+        finally:
+            self.waiters.pop(qid, None)
+        label = next((o["label"] for o in opts if o["value"] == value), "Dibatalkan")
+        self.hub.emit("answered", {"id": qid, "value": value, "label": label + (f" · {why}" if why else "")})
+        return value, why
+
+    def answer(self, qid: str, value: Any, why: str = "") -> bool:
+        fut = self.waiters.get(str(qid))
+        if fut is None or fut.done():
+            return False
+        fut.set_result((None if value is None else str(value), str(why or "")))
+        return True
+
+    def cancel_questions(self) -> bool:
+        pending = [f for f in self.waiters.values() if not f.done()]
+        for fut in pending:
+            fut.set_result((None, ""))
+        return bool(pending)
+
+    async def can_use_tool(self, tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> Any:
+        if tool in self.session_allow:
+            return PermissionResultAllow()
+        if tool == "ExitPlanMode":
+            ans, why = await self.ask_web(
+                "plan", "📋 Rencana dari Claude", md_html(await self.plan_text(inp) or "(rencana kosong)"),
+                [("1", "Ya, mulai dan auto-terima edit"), ("2", "Ya, tapi tanya dulu setiap edit"),
+                 ("no", "Tidak, lanjut merencanakan")], reason="Apa yang perlu diubah dari rencananya?")
+            return self.cancelled("Persetujuan rencana") if ans is None else self.plan_answer(ans, why)
+        title, body, suggestions, rules, where = self.permission_view(tool, inp, ctx)
+        note = (f"disimpan di {where}" if where else "") if rules else "sampai claude-code-mini ditutup"
+        ans, why = await self.ask_web(
+            "permission", f"🔐 {title}", rich_html(body),
+            [("yes", "Ya"), ("always", f"Ya, dan jangan tanya lagi untuk {rules or tool}", note),
+             ("no", "Tidak, dan beri tahu Claude harus bagaimana")],
+            reason="Kasih tahu Claude harus gimana (opsional)")
+        return self.cancelled(f"Izin {tool}") if ans is None else self.permission_answer(tool, ans, suggestions, rules, why)
+
+    def cancelled(self, what: str) -> PermissionResultDeny:
+        console.print(f"[yellow]✗ {what} dibatalkan[/]")
+        if self.fg_active:
+            self.interrupted = True
+        return PermissionResultDeny(message="User membatalkan permintaan ini.", interrupt=self.fg_active)
+
+    def interrupt_turn(self) -> bool:
+        if self.cancel_questions():  # pertanyaan izin yang menunggu dibatalkan (sekaligus menghentikan giliran)
+            return True
+        return super().interrupt_turn()
+
+    async def choose(self, title: str, labels: list[str]) -> int | None:
+        value, _ = await self.ask_web("choice", title, "", [(str(i), lab) for i, lab in enumerate(labels)]
+                                      + [("cancel", "Batal")])
+        return int(value) if value and value.isdigit() else None
+
+    async def pick_session(self, exclude: str | None = None) -> str | None:
+        sessions = session_list(self.repo, exclude)
+        if not sessions:
+            return None
+        i = await self.choose("Lanjutkan percakapan lama di folder ini:", [label for _, label in sessions])
+        return sessions[i][0] if i is not None else None
+
+    # --- status untuk browser ---
+    def status_snapshot(self) -> dict[str, Any]:
+        auto = self.auto_running()
+        if self.fg_active:
+            working = self.status_text().plain
+        elif auto:
+            working = f"✻ Claude menanggapi tugas background… ({fmt_dur(time.monotonic() - self.auto_start)} · esc untuk berhenti)"
+        else:
+            working = ""
+        g = self.goal
+        return {
+            "busy": self.busy() or auto, "working": working, "asking": bool(self.waiters),
+            "mode": self.args.mode, "mode_label": MODE_LABEL.get(self.args.mode, self.args.mode), "model": self.args.model,
+            "cost": f"${self.cost_total:.4f}", "ctx": None if self.ctx_pct is None else round(self.ctx_pct),
+            "goal": (f"🎯 {clip(oneline(g.condition), 60)} · {g.checks} cek" + (" · ⏸ dijeda" if g.paused else "")) if g else "",
+            "pending": [label for _, label in list(self.sent_pending)], "queued": list(self.prompt.queue),
+            "tasks": [self.task_line(t, 160).plain.strip() for t in self.running_bg()],
+            "session": self.session_id or "",
+        }
+
+    def hello(self) -> dict[str, Any]:
+        return {"repo": str(self.repo), "name": self.repo.name or str(self.repo), "modes": MODE_LABEL,
+                "cycle": MODE_CYCLE, "models": MODEL_ALIASES, "windows": WINDOWS}
+
+    def completions(self, text: str) -> list[dict[str, str]]:
+        """Saran untuk kolom chat: /perintah di awal baris, @path di mana saja."""
+        word = re.search(r"\S*$", text).group(0)  # type: ignore[union-attr]
+        if word.startswith("/") and text.lstrip() == word:
+            return [{"value": c + " ", "label": c, "meta": clip(self.prompt.commands.get(c) or "", 70)}
+                    for c in sorted(self.prompt.commands) if c.startswith(word)][:60]
+        if word.startswith("@"):
+            with contextlib.suppress(OSError):
+                return [{"value": m, "label": m.strip(), "meta": ""} for m in self.prompt.path_matches(word)][:60]
+        return []
+
+    async def handle_api(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action == "send":
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return {"ok": False}
+            if self.busy():  # Claude bekerja: pesan susulan / antre / perintah ringan, sama seperti di terminal
+                self.submit_while_busy(text)
+            else:
+                self.show_user(text)
+                self.prompt.submit(text)
+        elif action == "stop":
+            self.interrupt_turn()
+        elif action == "answer":
+            return {"ok": self.answer(str(body.get("id")), body.get("value"), str(body.get("reason") or ""))}
+        elif action == "mode":
+            mode = str(body.get("mode") or "")
+            if mode == "cycle":
+                self.cycle_mode()
+            elif mode in MODES:
+                self.args.mode = mode
+                if self.client:
+                    asyncio.ensure_future(self._call(self.client.set_permission_mode(mode)))
+        elif action == "model":
+            model = str(body.get("model") or "")
+            model = MODEL_ALIASES.get(model.lower(), model)
+            if model and model != self.args.model:
+                try:
+                    if self.client:
+                        await self.client.set_model(model)
+                    self.args.model = model
+                    console.print(f"[green]✓ Model diganti ke {model}[/]")
+                except Exception as e:
+                    console.print(f"[red]✗ Gagal mengganti model: {e}[/]")
+        elif action == "complete":
+            return {"items": self.completions(str(body.get("text") or ""))}
+        else:
+            return {"ok": False, "error": "unknown action"}
+        return {"ok": True}
+
+
+def build_web_app(ui: WebUI, hub: WebHub, token: str, cookie: str) -> Any:
+    from starlette.applications import Starlette
+    from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+    from starlette.routing import Route
+
+    loopback = {"127.0.0.1", "localhost", "::1"}
+    secure_headers = {
+        "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                    "img-src data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                                    "form-action 'none'"),
+    }
+
+    def host_ok(request: Any) -> bool:
+        host = (request.headers.get("host") or "").lower()
+        name = host[1:host.find("]")] if host.startswith("[") else host.rsplit(":", 1)[0]
+        if name not in loopback:  # tolak DNS rebinding: nama host harus loopback
+            return False
+        origin = request.headers.get("origin")
+        if origin and (urllib.parse.urlsplit(origin).hostname or "") not in loopback:
+            return False
+        return True
+
+    def token_ok(value: Any) -> bool:
+        return bool(value) and secrets.compare_digest(str(value).encode(), token.encode())
+
+    async def page(request: Any) -> Any:
+        if not host_ok(request):
+            return PlainTextResponse("forbidden", status_code=403)
+        via_url = token_ok(request.query_params.get("t"))
+        if not (via_url or token_ok(request.cookies.get(cookie))):
+            return HTMLResponse(GUI_LOCKED_HTML, status_code=403, headers=secure_headers)
+        html = GUI_HTML.replace("__CCM_TOKEN__", json.dumps(token))
+        resp = HTMLResponse(html, headers=secure_headers)
+        if via_url:  # reload tanpa token di URL tetap bisa (cookie ini tidak dikirim ke situs lain)
+            resp.set_cookie(cookie, token, httponly=True, samesite="strict", path="/")
+        return resp
+
+    async def events(request: Any) -> Any:
+        if not (host_ok(request) and (token_ok(request.query_params.get("t")) or token_ok(request.cookies.get(cookie)))):
+            return PlainTextResponse("forbidden", status_code=403)
+        q: asyncio.Queue = asyncio.Queue()
+        hub.clients.add(q)
+
+        def sse(ev: dict[str, Any]) -> str:
+            return "data: " + json.dumps(ev, ensure_ascii=False) + "\n\n"
+
+        async def gen() -> Any:
+            try:
+                yield sse({"type": "hello", **ui.hello()})
+                for ev in list(hub.log):
+                    yield sse(ev)
+                if hub.status:
+                    yield sse(hub.status)
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(q.get(), 15)
+                    except asyncio.TimeoutError:
+                        yield ": ping\n\n"
+                        continue
+                    if ev is None:
+                        break
+                    yield sse(ev)
+            finally:
+                hub.clients.discard(q)
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    async def api(request: Any) -> Any:
+        if not (host_ok(request) and token_ok(request.headers.get("x-ccmini-token"))):
+            return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        return JSONResponse(await ui.handle_api(request.path_params["action"], body))
+
+    return Starlette(routes=[Route("/", page), Route("/events", events),
+                             Route("/api/{action}", api, methods=["POST"])])
+
+
+async def start_web_server(make_app: Any, port: int) -> tuple[Any, asyncio.Task, int]:
+    """Jalankan uvicorn di event loop ini, di 127.0.0.1. Kalau port terpakai, coba port berikutnya.
+    make_app(port) membuat aplikasinya setelah port-nya pasti."""
+    import socket
+
+    import uvicorn
+
+    class QuietServer(uvicorn.Server):  # Ctrl+C diurus script ini sendiri, bukan uvicorn
+        def install_signal_handlers(self) -> None:
+            pass
+
+        @contextlib.contextmanager
+        def capture_signals(self) -> Any:
+            yield
+
+    sock = None
+    for cand in [port, *range(port + 1, port + 20), 0] if port else [0]:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if not WINDOWS:  # di Windows SO_REUSEADDR malah membolehkan dua proses memakai port yang sama
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", cand))
+        except OSError:
+            s.close()
+            continue
+        sock = s
+        break
+    if sock is None:
+        raise OSError("tidak ada port kosong untuk GUI")
+    config = uvicorn.Config(make_app(sock.getsockname()[1]), log_level="warning", access_log=False, lifespan="off", timeout_graceful_shutdown=1)
+    server = QuietServer(config)
+    task = asyncio.ensure_future(server.serve(sockets=[sock]))
+    for _ in range(200):
+        if server.started or task.done():
+            break
+        await asyncio.sleep(0.05)
+    if task.done():
+        task.result()  # lempar error start-nya
+    return server, task, sock.getsockname()[1]
+
+
+def open_browser(url: str) -> bool:
+    """Buka GUI sebagai jendela aplikasi (Edge/Chrome --app: tanpa address bar & tab); kalau tidak ada, browser bawaan."""
+    cands: list[Path] = []
+    if WINDOWS:
+        for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
+            if base:
+                cands += [Path(base) / "Microsoft/Edge/Application/msedge.exe",
+                          Path(base) / "Google/Chrome/Application/chrome.exe"]
+    elif sys.platform == "darwin":
+        cands += [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                  Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                  Path("/Applications/Chromium.app/Contents/MacOS/Chromium")]
+    else:
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return False  # server tanpa layar: buka lewat SSH tunnel
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+            found = shutil.which(name)
+            if found:
+                cands.append(Path(found))
+    for exe in cands:
+        if exe.is_file():
+            try:
+                subprocess.Popen([str(exe), f"--app={url}"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=not WINDOWS)
+                return True
+            except OSError:
+                continue
+    try:
+        import webbrowser
+
+        return webbrowser.open(url)
+    except Exception:
+        return False
+
+
+async def status_ticker(ui: WebUI, hub: WebHub) -> None:
+    """Kirim status (spinner, mode, biaya, antrean, tugas background) ke browser setiap kali berubah."""
+    last = None
+    while True:
+        try:
+            snap = ui.status_snapshot()
+        except Exception:
+            snap = last
+        if snap != last:
+            hub.emit("status", snap)
+            last = snap
+        await asyncio.sleep(0.25)
+
+
+def run_gui(repo: Path, args: argparse.Namespace, resume_id: str | None, continue_last: bool) -> WebUI:
+    """Mode --gui: server web lokal + sesi Claude di event loop yang sama, sampai /exit atau Ctrl+C di terminal."""
+    global console
+    term = console
+    hub = WebHub()
+    ui = WebUI(repo, args, hub)
+    token = secrets.token_urlsafe(24)
+
+    async def main_coro() -> None:
+        global console
+        hub.loop = asyncio.get_running_loop()
+        server = task = None
+        try:
+            # cookie per port: dua GUI di port berbeda tidak saling menimpa
+            server, task, port = await start_web_server(
+                lambda p: build_web_app(ui, hub, token, f"ccmini_{p}"), args.port)
+            url = f"http://127.0.0.1:{port}/?t={token}"
+            opened = not args.no_browser and open_browser(url)
+            term.print(f"[bold cyan]✻ claude-code-mini GUI[/] · 📂 {rich_escape(str(repo))}")
+            term.print(f"  {url}", soft_wrap=True, highlight=False)
+            term.print("[dim]  " + ("Browser sudah dibuka. " if opened else "Buka URL di atas di browser. ")
+                       + "Biarkan terminal ini terbuka; Ctrl+C (atau /exit di GUI) untuk berhenti.[/]")
+            if not opened:
+                term.print(f"[dim]  Di server: jalankan di komputermu  ssh -L {port}:127.0.0.1:{port} user@server  "
+                           "lalu buka URL itu di browser.[/]", soft_wrap=True)
+            stopping = False
+
+            def request_stop() -> None:  # Ctrl+C pertama: tutup sesi dengan rapi; kedua: paksa
+                nonlocal stopping
+                if stopping:
+                    return
+                stopping = True
+                term.print("\n[dim]Menutup GUI… (Ctrl+C sekali lagi untuk memaksa)[/]")
+                release()
+                with contextlib.suppress(ValueError):
+                    signal.signal(signal.SIGINT, signal.default_int_handler)
+                ui.prompt.abort(EOFError())
+
+            release = on_ctrl_c(asyncio.get_running_loop(), request_stop)
+            console = WebConsole(hub.emit)
+            ticker = asyncio.ensure_future(status_ticker(ui, hub))
+            try:
+                rid, cont = resume_id, continue_last
+                if rid:
+                    show_history(rid, repo)
+                while True:
+                    action = await session(ui, rid, cont)
+                    cont = False
+                    done, rid = after_session(ui, action, repo)
+                    if done:
+                        break
+            except BaseException as e:
+                if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError)):
+                    text = explain_error(e, args.buffer_mb) if isinstance(e, Exception) else str(e)
+                    hub.emit("fatal", {"text": f"claude-code-mini berhenti karena error: {text}"})
+                raise
+            finally:
+                ticker.cancel()
+        finally:
+            console = term
+            hub.emit("bye", {})
+            await asyncio.sleep(0.3)
+            hub.close()
+            if server is not None:
+                server.should_exit = True
+                with contextlib.suppress(BaseException):
+                    await asyncio.wait_for(task, 5)
+
+    try:
+        asyncio.run(main_coro())
+    except KeyboardInterrupt:
+        console = term
+        term.print("\n[dim]GUI dihentikan.[/]")
+    return ui
+
+
+def after_session(ui: UI, action: Any, repo: Path) -> tuple[bool, str | None]:
+    """Sesudah satu proses Claude selesai: (selesai?, session id untuk proses berikutnya)."""
+    if action == "exit":
+        return True, None
+    if action == "clear":
+        had_goal = ui.goal
+        ui.reset()
+        console.print("[dim]✻ Percakapan baru dimulai (konteks lama dibuang"
+                      + (f' · goal "{rich_escape(clip(oneline(had_goal.condition), 60))}" ikut dibatalkan' if had_goal else "")
+                      + ")[/]")
+        return False, None
+    if isinstance(action, tuple) and action[0] == "resume":
+        cost, had_goal = ui.cost_total, ui.goal
+        ui.reset()
+        ui.cost_base = cost
+        show_history(action[1], repo)
+        console.print("[dim]✻ Percakapan lama dilanjutkan"
+                      + (f' · goal "{rich_escape(clip(oneline(had_goal.condition), 60))}" tetap tersimpan di percakapan tadi'
+                         if had_goal else "") + "[/]")
+        return False, action[1]
+    # action == "recover": sambung ulang otomatis, lanjutkan percakapan yang sama
+    ui.failures += 1
+    if ui.failures > MAX_RECOVERY:
+        console.print(f"[red]✗ Gagal pulih setelah {MAX_RECOVERY}x percobaan. Script dihentikan.[/]")
+        sys.exit(1)
+    ui.on_reconnect()
+    if ui.session_id:
+        console.print(
+            f"[yellow]🔄 Menyambung ulang ({ui.failures}/{MAX_RECOVERY})… percakapan dilanjutkan, "
+            "konteks tetap ada.[/]\n[dim]Tugas terakhir terhenti. Ketik 'lanjutkan' untuk meneruskan, "
+            "atau beri instruksi lain.[/]"
+        )
+    else:
+        console.print(f"[yellow]🔄 Menyambung ulang ({ui.failures}/{MAX_RECOVERY})… "
+                      "(percakapan baru, sesi lama belum sempat tersimpan)[/]")
+    return False, ui.session_id
+
+
 def main() -> None:
     if "--setup" in sys.argv[1:]:  # biasanya sudah ditangani bootstrap(); ini cadangan kalau main() dipanggil langsung
         setup()
@@ -3692,7 +4980,15 @@ def main() -> None:
                    help=f"batas ukuran output tool dalam MB (default: {DEFAULT_BUFFER_MB})")
     p.add_argument("--setup", action="store_true",
                    help="pasang/update library & perintah `claude-code-mini`")
+    p.add_argument("--gui", action="store_true",
+                   help="buka tampilan GUI di browser (server lokal di 127.0.0.1, tanpa library tambahan)")
+    p.add_argument("--port", type=int, default=GUI_PORT,
+                   help=f"port GUI (default: {GUI_PORT}; kalau terpakai, dipilih port lain)")
+    p.add_argument("--no-browser", action="store_true",
+                   help="GUI: jangan buka browser otomatis (mis. di server; buka URL-nya lewat SSH tunnel)")
     args = p.parse_args()
+    if args.gui and args.print:
+        p.error("--gui tidak bisa digabung dengan -p")
     if args.yolo:
         args.mode = "bypassPermissions"
     args.model = MODEL_ALIASES.get(args.model.lower(), args.model)
@@ -3715,7 +5011,7 @@ def main() -> None:
             console.print('Jalankan dulu:  [bold]export ANTHROPIC_API_KEY="sk-ant-..."[/]')
         sys.exit(1)
 
-    if not args.print:
+    if not args.print and not args.gui:
         console.print(
             Panel.fit(
                 f"[bold]✻ claude-code-mini[/] [dim](Claude Code via API key)[/]\n"
@@ -3737,56 +5033,27 @@ def main() -> None:
             )
 
     keep_awake()
-    ui = UI(repo, args)
     resume_id: str | None = None
     continue_last = args.cont
     if args.resume is not None:
         resume_id = args.resume or pick_session(repo)
         if not resume_id:
             sys.exit(0)
-    if resume_id:
-        show_history(resume_id, repo)
 
+    ui: UI | None = None
     try:
-        while True:
-            action = asyncio.run(session(ui, resume_id, continue_last))
-            continue_last = False
-            if action == "exit":
-                break
-            if action == "clear":
-                had_goal = ui.goal
-                ui.reset()
-                resume_id = None
-                console.print("[dim]✻ Percakapan baru dimulai (konteks lama dibuang"
-                              + (f' · goal "{rich_escape(clip(oneline(had_goal.condition), 60))}" ikut dibatalkan' if had_goal else "")
-                              + ")[/]")
-                continue
-            if isinstance(action, tuple) and action[0] == "resume":
-                cost, had_goal = ui.cost_total, ui.goal
-                ui.reset()
-                ui.cost_base = cost
-                resume_id = action[1]
-                show_history(resume_id, repo)
-                console.print("[dim]✻ Percakapan lama dilanjutkan"
-                              + (f' · goal "{rich_escape(clip(oneline(had_goal.condition), 60))}" tetap tersimpan di percakapan tadi'
-                                 if had_goal else "") + "[/]")
-                continue
-            # action == "recover": sambung ulang otomatis, lanjutkan percakapan yang sama
-            ui.failures += 1
-            if ui.failures > MAX_RECOVERY:
-                console.print(f"[red]✗ Gagal pulih setelah {MAX_RECOVERY}x percobaan. Script dihentikan.[/]")
-                sys.exit(1)
-            ui.on_reconnect()
-            resume_id = ui.session_id
+        if args.gui:
+            ui = run_gui(repo, args, resume_id, continue_last)
+        else:
+            ui = UI(repo, args)
             if resume_id:
-                console.print(
-                    f"[yellow]🔄 Menyambung ulang ({ui.failures}/{MAX_RECOVERY})… percakapan dilanjutkan, "
-                    "konteks tetap ada.[/]\n[dim]Tugas terakhir terhenti. Ketik 'lanjutkan' untuk meneruskan, "
-                    "atau beri instruksi lain.[/]"
-                )
-            else:
-                console.print(f"[yellow]🔄 Menyambung ulang ({ui.failures}/{MAX_RECOVERY})… "
-                              "(percakapan baru, sesi lama belum sempat tersimpan)[/]")
+                show_history(resume_id, repo)
+            while True:
+                action = asyncio.run(session(ui, resume_id, continue_last))
+                continue_last = False
+                done, resume_id = after_session(ui, action, repo)
+                if done:
+                    break
     except WrongAuthSource as e:
         console.print(
             f"\n[bold red]✗ Dihentikan: Claude memakai auth '{e}', bukan ANTHROPIC_API_KEY.[/]\n"
@@ -3811,10 +5078,13 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
 
+    if ui is None:
+        return
+    gui = " --gui" if args.gui else ""
     if ui.session_id and not args.print:
         console.print(f"[dim]Total biaya: ${ui.cost_total:.4f} · Lanjutkan nanti dengan:[/]"
                       + ("  [dim](goal aktif ikut dipulihkan)[/]" if ui.goal else ""))
-        console.print(f"  {self_command()} {quote_arg(str(repo))} --resume {ui.session_id}", soft_wrap=True)
+        console.print(f"  {self_command()} {quote_arg(str(repo))}{gui} --resume {ui.session_id}", soft_wrap=True)
     elif not args.print:
         console.print("[dim]Sampai jumpa 👋[/]")
     if ui.exit_code:

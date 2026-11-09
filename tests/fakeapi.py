@@ -7,20 +7,24 @@ Mesin Claude Code yang asli diarahkan ke sini lewat ANTHROPIC_BASE_URL. Skenario
   [[ps:CMD]]         sama, tapi memakai tool PowerShell kalau tersedia
   [[sleep:N:K]]      K x tool shell "sleep N" (PowerShell: Start-Sleep -Seconds N), lalu jawab "SELESAI"
   [[read:PATH]]      tool Read PATH, lalu jawab "DIBACA"
+  [[edit:PATH|LAMA|BARU]]  Read PATH, lalu Edit (LAMA -> BARU), lalu jawab "SELESAI"
+  [[plan:TEKS]]      ExitPlanMode dengan rencana TEKS (di plan mode), lalu jawab "SELESAI"
   (tanpa penanda)    jawab "OK"
 
 Jalankan: python fakeapi.py PORT LOGFILE
 """
 import json
+import os
 import re
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MARK = re.compile(r"\[\[(say|sh|ps|sleep|read):(.*?)\]\]", re.S)
+MARK = re.compile(r"\[\[(say|sh|ps|sleep|read|edit|plan):(.*?)\]\]", re.S)
 LOG_LOCK = threading.Lock()
 SEQ = [0]
+RUN = os.urandom(3).hex()  # ID unik per proses: restart server tiruan tidak membuat ID tool bentrok di percakapan lama
 
 
 def log(path, entry):
@@ -45,6 +49,23 @@ def tool_uses_of(msg):
     if not isinstance(c, list):
         return []
     return [b for b in c if isinstance(b, dict) and b.get("type") == "tool_use"]
+
+
+def all_texts(body):
+    sysp = body.get("system")
+    out = [sysp] if isinstance(sysp, str) else [b.get("text", "") for b in sysp or [] if isinstance(b, dict)]
+    for m in body.get("messages") or []:
+        out += texts_of(m)
+    return out
+
+
+def plan_path(body):
+    """Lokasi file rencana yang diberikan Claude Code di prompt plan mode."""
+    for text in reversed(all_texts(body)):
+        m = re.search(r"(?:create your plan at|plan file already exists at) (\S+?\.md)", text)
+        if m:
+            return m.group(1)
+    return None
 
 
 def decide(body):
@@ -85,6 +106,25 @@ def decide(body):
         if done == 0 and "Read" in tools:
             return ("tool", "Read", {"file_path": arg})
         return ("text", "DIBACA")
+    if kind == "edit":
+        path, old, new = (arg.split("|") + ["", ""])[:3]
+        if done == 0:
+            return ("tool", "Read", {"file_path": path})
+        if done == 1:
+            return ("tool", "Edit", {"file_path": path, "old_string": old, "new_string": new})
+        return ("text", "SELESAI")
+    if kind == "plan":  # seperti model sungguhan: tulis file rencana, muat ExitPlanMode (tool tertunda), lalu panggil
+        used = [b.get("name") for m in msgs[where + 1:] if m.get("role") == "assistant" for b in tool_uses_of(m)]
+        if "ExitPlanMode" in used:
+            return ("text", "SELESAI")
+        path = plan_path(body)
+        if path and "Write" not in used and "Write" in tools:
+            return ("tool", "Write", {"file_path": path, "content": arg.replace("\\n", "\n") + "\n"})
+        if "ExitPlanMode" in tools:
+            return ("tool", "ExitPlanMode", {"plan": arg.replace("\\n", "\n")})
+        if "ToolSearch" in tools and "ToolSearch" not in used:
+            return ("tool", "ToolSearch", {"query": "select:ExitPlanMode", "max_results": 1})
+        return ("text", "SELESAI")
     return ("text", "OK")
 
 
@@ -150,12 +190,12 @@ class Handler(BaseHTTPRequestHandler):
             "decision": decision,
         })
         model = body.get("model") or "claude-haiku-5-5"
-        msg_id = f"msg_fake{seq:04d}"
+        msg_id = f"msg_fake{RUN}{seq:04d}"
         if decision[0] == "text":
             content = [{"type": "text", "text": decision[1]}]
             stop = "end_turn"
         else:
-            content = [{"type": "tool_use", "id": f"toolu_fake{seq:04d}", "name": decision[1], "input": decision[2]}]
+            content = [{"type": "tool_use", "id": f"toolu_fake{RUN}{seq:04d}", "name": decision[1], "input": decision[2]}]
             stop = "tool_use"
         usage = {"input_tokens": 120, "output_tokens": 12, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
         if not body.get("stream"):

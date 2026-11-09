@@ -57,6 +57,12 @@ jobs:
         env:
           CCMINI_OUT: ${{ github.workspace }}/test-out
 
+      - name: GUI tests (--gui server over HTTP + SSE, Ctrl+C)
+        if: ${{ !cancelled() }}
+        run: python tests/gui.py
+        env:
+          CCMINI_OUT: ${{ github.workspace }}/test-out/gui
+
       - name: Windows without Git Bash (Claude uses PowerShell)
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh

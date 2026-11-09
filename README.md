@@ -70,6 +70,8 @@ menghasilkan 20. Saya ganti menjadi a / b. …
   `.claude/settings.local.json`) · `3` no, and tell Claude what to do instead.
 - **Permission modes**: `default`, `acceptEdits` and `plan` (cycle with Shift+Tab), a plan approval panel, and
   `--yolo` for sandboxes.
+- **Terminal or browser**: the same assistant runs in the terminal or, with `--gui`, as a local web app in your
+  browser (chat bubbles, tool cards with diffs, permission buttons), with no extra dependencies.
 - **Type while Claude works**: the prompt never locks. A message you send mid-turn is read by Claude as soon as
   the tool call that is running finishes (steering, like Claude Code); commands queue until the turn ends.
 - **Background agents and commands you can watch**: live progress under the prompt, `/tasks` and `/stop`, and
@@ -174,6 +176,7 @@ claude-code-mini . -c                          # continue the last conversation 
 claude-code-mini . -r                          # pick an older conversation
 claude-code-mini . -p "explain this repo"      # one-shot: answer, then exit
 claude-code-mini . -p "/goal all tests pass (pytest -q exits 0), at most 20 turns"
+claude-code-mini . --gui                       # the same, in your browser
 ```
 
 Inside a session:
@@ -196,6 +199,18 @@ Inside a session:
 
 Other Claude Code commands, such as `/compact` and `/init`, and your own `.claude/commands/*.md` are passed through
 to Claude Code.
+
+### GUI
+
+`claude-code-mini --gui` starts a small server on `127.0.0.1` and opens the interface in your browser (as an app
+window when Edge or Chrome is installed). It has the same features as the terminal version: Markdown answers, tool
+cards with colored diffs, permission and plan approvals as buttons, a Stop button (or Esc), typing while Claude
+works, mode and model selectors, live cost and context. Commands and shortcuts are typed into the message box as
+usual. Stop it with **Keluar** ("quit"), `/exit`, or Ctrl+C in its terminal.
+
+The server only accepts requests from the same computer that carry the random token printed in the terminal, so
+other web pages cannot drive it. On a server, run `claude-code-mini --gui --no-browser` and open the printed address
+through an SSH tunnel (`ssh -L 8765:127.0.0.1:8765 user@server`). Use `--port` to pick another port.
 
 Exit codes in `-p` mode:
 

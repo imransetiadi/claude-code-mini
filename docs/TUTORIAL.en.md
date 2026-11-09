@@ -366,6 +366,65 @@ Total biaya: $0.0379 · Lanjutkan nanti dengan:
   claude-code-mini /home/dev/proyek/kalkulator --resume 93d57805-c135-45ea-88ae-2744df32bf27
 ```
 
+### 4.1 Or use the GUI in your browser
+
+If you prefer a window to a terminal, start it with `--gui`:
+
+```bash
+claude-code-mini ~/projects/calculator --gui
+```
+
+claude-code-mini starts a small server on your own computer (`127.0.0.1`) and opens the interface in your browser.
+If Edge or Chrome is installed, it opens as an app window without an address bar; otherwise in your default
+browser. The terminal stays open and shows the address:
+
+```text
+✻ claude-code-mini GUI · 📂 /home/dev/projects/calculator
+  http://127.0.0.1:8765/?t=…
+  Browser sudah dibuka. Biarkan terminal ini terbuka; Ctrl+C (atau /exit di GUI) untuk berhenti.
+```
+
+("The browser is open. Keep this terminal open; Ctrl+C (or /exit in the GUI) to stop.") Everything works as in the
+terminal; only the presentation differs:
+
+- **Conversation.** Your messages appear as bubbles, and Claude's answers are rendered as Markdown (headings, lists,
+  tables, code blocks). Claude's thinking (`✻ Berpikir…`) can be expanded.
+- **Tool cards.** Each tool call is a card: `Bash` with its command, `Update` with a colored, line-numbered diff,
+  `Read`, `Write`, the todo list, sub-agents. Results appear under their card; long output opens with "Lihat output
+  lengkap" ("show full output").
+- **Permissions and plans.** Permission questions (section 6) and plan approvals appear as cards with buttons. Click
+  a button or press 1/2/3. Choosing "Tidak" ("no") opens a field to tell Claude what to do instead. The tab title
+  turns into 🔐 while a question is waiting.
+- **While Claude works.** A working status (the terminal's spinner) appears above the message box, with a
+  **■ Stop** button. The message box stays usable, with the same rules as section 7.4: plain messages are read
+  after the current step, `/commands` and `!command` queue, and the queue is shown above the message box.
+- **Bottom bar.** Permission mode and model selectors, context usage, cost, goal, and background tasks.
+- **Top bar.** **Baru** ("new", `/clear`), **Riwayat** ("history", `/resume`: pick an older conversation from a
+  list), **Rewind**, **Bantuan** ("help") and **Keluar** ("quit").
+
+| Key | What it does |
+|---|---|
+| Enter / Shift+Enter | send / new line |
+| Esc | stop Claude (same as the Stop button) |
+| Shift+Tab | switch the permission mode |
+| Tab | pick the `/command` or `@path` suggestion shown while typing |
+| ↑ (empty box) | the last message you sent |
+| 1 / 2 / 3 | answer the permission question on screen |
+
+All other commands and shortcuts (`!command`, `@file`, `# note`, `/goal`, `/tasks`, `/model`, …) are typed into the
+message box, as in the terminal. Conversations from the GUI and the terminal are stored in the same place, so you can
+continue them either way (`--resume`, `-c`, or the Riwayat button).
+
+To stop, click **Keluar**, type `/exit`, or press **Ctrl+C** in its terminal. Reloading the page or opening another
+tab does not interrupt anything: the running conversation shows up again right away.
+
+> **Security.** The GUI server only accepts connections from the same computer, and every request must carry the
+> random token printed in the terminal (the `?t=…` part of the address). Other web pages you open cannot send
+> commands to Claude through it. Don't share the full address.
+
+Extra options: `--port 9000` uses another port (default `8765`; if it is taken, the next free one is used), and
+`--no-browser` does not open a browser. For a server over SSH, see section 16.1.
+
 ## 5. Reading the screen
 
 ### 5.1 Activity lines
@@ -930,6 +989,25 @@ Tips:
   bottom is never read. Move the `export ANTHROPIC_API_KEY=…` and PATH lines to the very top of `~/.bashrc`, or run
   it through `bash -lic '…'`.
 
+### 16.1 The GUI on a server through an SSH tunnel
+
+The GUI also works for claude-code-mini running on a server. On the server (preferably inside tmux):
+
+```bash
+claude-code-mini ~/project --gui --no-browser
+```
+
+Then, on your laptop, forward the port over SSH and open the address printed on the server (including `?t=…`) in
+your laptop's browser:
+
+```bash
+ssh -i key.pem -L 8765:127.0.0.1:8765 ubuntu@SERVER-ADDRESS
+```
+
+If the server uses another port (it is part of the printed address), replace both `8765`s with it. The GUI server
+still only listens on the server's `127.0.0.1`, so it is not exposed to the internet; you reach it only through your
+SSH tunnel.
+
 ## 17. Updating and uninstalling
 
 Update to the latest version:
@@ -1007,6 +1085,9 @@ total are always visible (in the toolbar, on the `✓ Selesai` line, and via `/c
 **Does it use my Claude Pro/Max subscription quota?**
 No. claude-code-mini only runs with `ANTHROPIC_API_KEY`; if it detects any other login source, it stops.
 
+**Is there a GUI?**
+Yes: `claude-code-mini --gui` opens the interface in your browser, with the same features as the terminal version (section 4.1).
+
 **How is it different from the official Claude Code?**
 The engine is the same. claude-code-mini adds an Indonesian interface, live cost and token info, background-task
 monitoring in the toolbar, and the API key safeguard. On the other hand, a few things are not available: the
@@ -1028,7 +1109,8 @@ usage: claude-code-mini [-h] [--model MODEL]
                         [--mode {default,acceptEdits,plan,auto,bypassPermissions,dontAsk}]
                         [--effort {low,medium,high,xhigh,max}]
                         [--budget BUDGET] [--yolo] [-c] [-r [SESSION_ID]]
-                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup]
+                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup] [--gui]
+                        [--port PORT] [--no-browser]
                         [repo]
 ```
 
@@ -1045,6 +1127,9 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `-p`, `--print PROMPT` | one-shot, then exit (exit codes in section 13) |
 | `--buffer-mb MB` | the tool-output size limit (default: 64) |
 | `--setup` | install/update the libraries and the `claude-code-mini` command |
+| `--gui` | open the GUI in your browser (section 4.1) |
+| `--port PORT` | GUI port (default: 8765; if it is taken, the next free one is used) |
+| `--no-browser` | GUI: don't open a browser (e.g. on a server, section 16.1) |
 
 ### B. In-session commands
 

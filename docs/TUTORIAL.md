@@ -353,6 +353,64 @@ Total biaya: $0.0379 · Lanjutkan nanti dengan:
   claude-code-mini /home/dev/proyek/kalkulator --resume 93d57805-c135-45ea-88ae-2744df32bf27
 ```
 
+### 4.1 Atau pakai GUI di browser
+
+Kalau lebih suka jendela daripada terminal, jalankan dengan `--gui`:
+
+```bash
+claude-code-mini ~/proyek/kalkulator --gui
+```
+
+claude-code-mini menyalakan server kecil di komputermu sendiri (`127.0.0.1`), lalu membuka tampilannya di browser.
+Kalau ada Edge atau Chrome, tampilannya dibuka sebagai jendela aplikasi tanpa address bar; kalau tidak, di browser
+bawaan. Terminalnya tetap terbuka dan menampilkan alamatnya:
+
+```text
+✻ claude-code-mini GUI · 📂 /home/dev/proyek/kalkulator
+  http://127.0.0.1:8765/?t=…
+  Browser sudah dibuka. Biarkan terminal ini terbuka; Ctrl+C (atau /exit di GUI) untuk berhenti.
+```
+
+Isinya sama dengan versi terminal, hanya tampilannya berbeda:
+
+- **Percakapan.** Pesanmu tampil sebagai gelembung, jawaban Claude dirender sebagai markdown (judul, daftar, tabel,
+  blok kode). Pikiran Claude (`✻ Berpikir…`) bisa dibuka-tutup.
+- **Kartu tool.** Setiap tool tampil sebagai kartu: `Bash` dengan command-nya, `Update` dengan diff berwarna dan
+  nomor baris, `Read`, `Write`, todo list, sub-agent. Hasilnya muncul di bawah kartunya; output yang panjang bisa
+  dibuka lewat "Lihat output lengkap".
+- **Izin dan rencana.** Pertanyaan izin (bagian 6) dan persetujuan rencana muncul sebagai kartu dengan tombol. Klik
+  tombolnya atau tekan 1/2/3. Pilihan "Tidak" membuka kolom untuk memberi tahu Claude harus bagaimana. Judul tab
+  berubah menjadi 🔐 selama ada pertanyaan yang menunggu.
+- **Saat Claude bekerja.** Di atas kolom pesan tampil status kerja (seperti spinner di terminal) dengan tombol
+  **■ Stop**. Kolom pesan tetap bisa dipakai, dengan aturan yang sama seperti bagian 7.4: pesan biasa dibaca Claude
+  setelah langkah yang sedang jalan, `/perintah` dan `!command` antre, dan antreannya tampil di atas kolom pesan.
+- **Bawah.** Pilihan mode izin dan model, pemakaian konteks, biaya, goal, dan tugas background.
+- **Atas.** Tombol **Baru** (`/clear`), **Riwayat** (`/resume`, pilih percakapan lama dari daftar), **Rewind**,
+  **Bantuan**, dan **Keluar**.
+
+| Tombol keyboard | Fungsi |
+|---|---|
+| Enter / Shift+Enter | kirim / baris baru |
+| Esc | hentikan Claude (sama dengan tombol Stop) |
+| Shift+Tab | ganti mode izin |
+| Tab | pilih saran `/perintah` atau `@path` yang muncul saat mengetik |
+| ↑ (kolom kosong) | pesan yang terakhir dikirim |
+| 1 / 2 / 3 | jawab pertanyaan izin yang sedang tampil |
+
+Semua perintah dan shortcut lain (`!command`, `@file`, `# catatan`, `/goal`, `/tasks`, `/model`, …) diketik di
+kolom pesan, sama seperti di terminal. Percakapan dari GUI dan terminal tersimpan di tempat yang sama, jadi bisa
+dilanjutkan dari mana saja (`--resume`, `-c`, atau tombol Riwayat).
+
+Untuk berhenti, klik **Keluar**, ketik `/exit`, atau tekan **Ctrl+C** di terminalnya. Me-reload atau membuka tab
+baru tidak memutus apa pun: percakapan yang sedang berjalan langsung tampil lagi.
+
+> **Keamanan.** Server GUI hanya menerima koneksi dari komputer itu sendiri, dan setiap permintaan harus membawa
+> token acak yang dicetak di terminal (bagian `?t=…` di alamatnya). Halaman web lain yang kamu buka tidak bisa
+> mengirim perintah ke Claude lewat GUI ini. Jangan bagikan alamat lengkapnya.
+
+Opsi tambahan: `--port 9000` memakai port lain (bawaan `8765`; kalau terpakai, dipilih port berikutnya), dan
+`--no-browser` tidak membuka browser otomatis. Untuk server lewat SSH, lihat bagian 16.1.
+
 ## 5. Membaca layar
 
 ### 5.1 Baris aktivitas
@@ -896,6 +954,24 @@ Tips:
   bagian bawahnya tidak terbaca. Pindahkan baris `export ANTHROPIC_API_KEY=…` dan PATH ke paling atas `~/.bashrc`,
   atau jalankan lewat `bash -lic '…'`.
 
+### 16.1 GUI di server lewat SSH tunnel
+
+GUI juga bisa dipakai untuk claude-code-mini yang berjalan di server. Di server (sebaiknya di dalam tmux):
+
+```bash
+claude-code-mini ~/proyek --gui --no-browser
+```
+
+Lalu di laptopmu, sambungkan port-nya lewat SSH dan buka alamat yang dicetak di server (lengkap dengan `?t=…`) di
+browser laptop:
+
+```bash
+ssh -i kunci.pem -L 8765:127.0.0.1:8765 ubuntu@ALAMAT-SERVER
+```
+
+Kalau server memakai port lain (tercetak di alamatnya), ganti kedua angka `8765` dengan port itu. Server GUI tetap
+hanya mendengarkan di `127.0.0.1` server, jadi tidak terbuka ke internet; aksesnya cuma lewat tunnel SSH-mu.
+
 ## 17. Update dan uninstall
 
 Update ke versi terbaru:
@@ -974,6 +1050,9 @@ sekitar $0.04. Batasi dengan `--budget`.
 Tidak. claude-code-mini hanya mau berjalan dengan `ANTHROPIC_API_KEY`; kalau terdeteksi sumber login lain, ia
 berhenti.
 
+**Ada versi GUI-nya?**
+Ada: `claude-code-mini --gui` membuka tampilan di browser, dengan fitur yang sama seperti di terminal (bagian 4.1).
+
 **Apa bedanya dengan Claude Code resmi?**
 Mesinnya sama. claude-code-mini menambahkan tampilan berbahasa Indonesia, info biaya dan token yang live,
 pemantauan tugas background di toolbar, dan pengaman API key. Sebaliknya, beberapa hal tidak tersedia: tool tanya
@@ -995,7 +1074,8 @@ usage: claude-code-mini [-h] [--model MODEL]
                         [--mode {default,acceptEdits,plan,auto,bypassPermissions,dontAsk}]
                         [--effort {low,medium,high,xhigh,max}]
                         [--budget BUDGET] [--yolo] [-c] [-r [SESSION_ID]]
-                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup]
+                        [-p PROMPT] [--buffer-mb BUFFER_MB] [--setup] [--gui]
+                        [--port PORT] [--no-browser]
                         [repo]
 ```
 
@@ -1012,6 +1092,9 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `-p`, `--print PROMPT` | sekali jalan lalu keluar (exit code di bagian 13) |
 | `--buffer-mb MB` | batas ukuran output tool (bawaan: 64) |
 | `--setup` | pasang/update library dan perintah `claude-code-mini` |
+| `--gui` | buka tampilan GUI di browser (bagian 4.1) |
+| `--port PORT` | port GUI (bawaan: 8765; kalau terpakai, dipilih port berikutnya) |
+| `--no-browser` | GUI: jangan buka browser otomatis (mis. di server, bagian 16.1) |
 
 ### B. Perintah di dalam sesi
 
