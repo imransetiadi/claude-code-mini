@@ -231,9 +231,11 @@ run_setup() {
 }
 
 # ---------------------------------------------------------------- shell: PATH + API key
+# File startup shell yang diberi blok PATH + API key. RC = file utama (untuk pesan "source …").
 detect_rc() {
     SHELL_NAME="$(basename "${SHELL:-bash}")"
     RC=""
+    RC2="" # file kedua: ~/.bashrc untuk shell login sh/dash/ksh, karena bash interaktif hanya membaca ~/.bashrc
     case "$SHELL_NAME" in
         zsh) RC="${ZDOTDIR:-$HOME}/.zshrc" ;;
         bash)
@@ -246,11 +248,15 @@ detect_rc() {
             fi
             ;;
         fish) RC="" ;;
-        *) RC="$HOME/.profile" ;;
+        *)
+            RC="$HOME/.profile"
+            [ -f "$HOME/.bashrc" ] && RC2="$HOME/.bashrc"
+            ;;
     esac
 }
 
 write_rc_block() {
+    local f done_files="" had_files=""
     if [ -z "$RC" ]; then
         warn "Shell $SHELL_NAME: tambahkan sendiri ~/.local/bin ke PATH dan muat API key-nya, misalnya:"
         printf '    fish_add_path ~/.local/bin\n'
@@ -258,18 +264,22 @@ write_rc_block() {
             "'test -r ~/.config/claude-code-mini/api_key; and read -gx ANTHROPIC_API_KEY < ~/.config/claude-code-mini/api_key'"
         return 0
     fi
-    if [ -f "$RC" ] && grep -qF "$RC_BEGIN" "$RC"; then
-        ok "PATH dan API key sudah dimuat oleh $(tilde "$RC")"
-        return 0
-    fi
-    # shellcheck disable=SC2016 # sengaja tanpa ekspansi: $PATH dan $HOME dibaca saat shell baru dimulai
-    {
-        printf '\n%s\n' "$RC_BEGIN"
-        printf '%s\n' 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
-        printf '%s\n' 'if [ -r "$HOME/.config/claude-code-mini/api_key" ]; then read -r ANTHROPIC_API_KEY < "$HOME/.config/claude-code-mini/api_key"; export ANTHROPIC_API_KEY; fi'
-        printf '%s\n' "$RC_END"
-    } >>"$RC" || fail "Gagal menulis $RC"
-    ok "$(tilde "$RC"): ~/.local/bin masuk PATH dan API key dimuat otomatis di terminal baru"
+    for f in "$RC" ${RC2:+"$RC2"}; do
+        if [ -f "$f" ] && grep -qF "$RC_BEGIN" "$f"; then
+            had_files="${had_files:+$had_files, }$(tilde "$f")"
+            continue
+        fi
+        # shellcheck disable=SC2016 # sengaja tanpa ekspansi: $PATH dan $HOME dibaca saat shell baru dimulai
+        {
+            printf '\n%s\n' "$RC_BEGIN"
+            printf '%s\n' 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+            printf '%s\n' 'if [ -r "$HOME/.config/claude-code-mini/api_key" ]; then read -r ANTHROPIC_API_KEY < "$HOME/.config/claude-code-mini/api_key"; export ANTHROPIC_API_KEY; fi'
+            printf '%s\n' "$RC_END"
+        } >>"$f" || fail "Gagal menulis $f"
+        done_files="${done_files:+$done_files, }$(tilde "$f")"
+    done
+    [ -z "$had_files" ] || ok "PATH dan API key sudah dimuat oleh $had_files"
+    [ -z "$done_files" ] || ok "$done_files: ~/.local/bin masuk PATH dan API key dimuat otomatis di terminal baru"
 }
 
 # Cetak kode HTTP GET /v1/models dengan key ini (200 = diterima), 0 kalau tidak tersambung.

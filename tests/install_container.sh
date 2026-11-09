@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Tes install.sh di container Ubuntu yang masih bersih (tanpa Python), dipanggil dari .github/workflows/tests.yml:
 #   root: sebagai root -> installer memasang python3 + python3-venv + git lewat apt-get
-#   user: sebagai user biasa tanpa sudo -> installer memasang Python lewat uv (tanpa sudo)
-# Sesudahnya perintah claude-code-mini yang terpasang dipakai dengan API palsu (tests/fakeapi.py), lewat shell
-# interaktif baru yang memuat ~/.bashrc hasil installer.
+#   user: user biasa tanpa sudo, dibuat dengan useradd (shell login /bin/sh) -> installer memasang Python lewat uv
+# Sesudahnya perintah claude-code-mini yang terpasang dipakai dengan API palsu (tests/fakeapi.py), lewat dua shell
+# baru: bash interaktif (seperti jendela terminal, membaca ~/.bashrc) dan shell login milik user itu (seperti sesi
+# SSH, membaca ~/.profile). Keduanya harus menemukan perintahnya lewat blok yang ditambahkan installer.
 #
 #     docker run --rm -v "$PWD:/src:ro" ubuntu:26.04 bash /src/tests/install_container.sh user
 set -euo pipefail
@@ -24,17 +25,25 @@ ANTHROPIC_API_KEY=sk-ant-fake-container-key bash /src/install.sh
 "$HOME/.local/share/claude-code-mini/venv/bin/python" /src/tests/fakeapi.py 8899 /tmp/fakeapi.log >/dev/null 2>&1 &
 for _ in $(seq 1 50); do (echo >/dev/tcp/127.0.0.1/8899) 2>/dev/null && break; sleep 0.1; done
 mkdir -p "$HOME/proyek"
-rc=0
-out="$(ANTHROPIC_API_KEY=sk-ant-fake-container-key ANTHROPIC_BASE_URL=http://127.0.0.1:8899 \
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 bash -ic 'cd "$HOME/proyek" && claude-code-mini --model haiku -p "[[say:halo dari container]]"' 2>&1)" || rc=$?
-printf '%s\n' "$out" | tail -n 4
-[ "$rc" = 0 ] && printf '%s\n' "$out" | grep -q "halo dari container"
-echo "OK: claude-code-mini dari PATH ($(bash -ic 'command -v claude-code-mini' 2>/dev/null))"
+login_shell="$(getent passwd "$(id -un)" | cut -d: -f7)"
+for sh in "bash -ic" "$login_shell -ilc"; do
+    rc=0
+    # shellcheck disable=SC2016,SC2086 # $HOME diperluas oleh shell baru; $sh sengaja dipecah jadi perintah + opsi
+    out="$(ANTHROPIC_API_KEY=sk-ant-fake-container-key ANTHROPIC_BASE_URL=http://127.0.0.1:8899 \
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+        $sh 'cd "$HOME/proyek" && claude-code-mini --model haiku -p "[[say:halo dari container]]"' 2>&1)" || rc=$?
+    printf '[%s] exit %s\n%s\n' "$sh" "$rc" "$(printf '%s\n' "$out" | tail -n 3)"
+    if [ "$rc" != 0 ] || ! printf '%s\n' "$out" | grep -q "halo dari container"; then
+        echo "GAGAL: claude-code-mini tidak jalan lewat $sh" >&2
+        exit 1
+    fi
+done
+echo "OK: shell login $login_shell dan bash interaktif menemukan claude-code-mini"
 EOF
 
 if [ "$mode" = root ]; then
     bash /tmp/run.sh
 else
-    useradd -m dev
+    useradd -m dev # tanpa -s: shell login /bin/sh, seperti user yang dibuat lewat useradd biasa
     su dev -c "bash /tmp/run.sh"
 fi
