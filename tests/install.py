@@ -199,6 +199,19 @@ def test_again(download):
           out[-800:])
 
 
+def test_bash_on_windows():
+    """install.sh di terminal bash Windows (Git Bash; MobaXterm/Cygwin serupa): harus mengarahkan ke PowerShell."""
+    bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
+    if not bash.exists():
+        print("skip N12: Git Bash tidak ada", flush=True)
+        return
+    r = subprocess.run([str(bash), (ROOT / "install.sh").as_posix()], env=inst_env(), stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=120)
+    out = (r.stdout + r.stderr).decode("utf-8", "replace")
+    check("N12 install.sh di Git Bash: berhenti dan mengarahkan ke PowerShell (irm … | iex)",
+          r.returncode == 1 and "terminal bash di Windows" in out and "install.ps1 | iex" in out, out[-800:])
+
+
 def main():
     if WIN and not (os.environ.get("GITHUB_ACTIONS") or "--force" in sys.argv):
         print("skip: di Windows tes ini mengubah environment variable user; jalankan di CI atau dengan --force")
@@ -210,6 +223,8 @@ def main():
     try:
         test_interactive()
         test_again("--download" in sys.argv)
+        if WIN:
+            test_bash_on_windows()
     finally:
         fake.terminate()
         for name, value in saved.items():

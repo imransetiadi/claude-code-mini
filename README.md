@@ -72,11 +72,18 @@ On **macOS and Linux**, in a terminal:
 curl -fsSL https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.sh | bash
 ```
 
-On **Windows 11**, in PowerShell (open **Terminal** from the Start menu):
+On **Windows 11**, in **PowerShell**: press the Windows key, type `PowerShell` (or `Terminal`), press Enter, then
+run:
 
 ```powershell
 irm https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.ps1 | iex
 ```
+
+> **Windows: PowerShell only.** `irm` and `iex` are PowerShell commands, so in a bash terminal on Windows (the local
+> terminal of MobaXterm, Git Bash, Cygwin) this line fails with `irm: command not found`. Afterwards, run
+> claude-code-mini in Windows Terminal (PowerShell, or Git Bash inside Windows Terminal), not in MobaXterm's local
+> terminal or the separate Git Bash window: those are not Windows consoles. In WSL, use the macOS/Linux line
+> instead: it installs the Linux version inside WSL.
 
 When it asks `Tempel API key` ("paste the API key"), paste your key and press Enter. Nothing appears while you
 paste, so the key never shows on screen. Then go to a project folder and start it:
@@ -686,7 +693,8 @@ official Claude Code; delete them by hand if you want to.
 | `✗ Mesin Claude Code gagal start` ("the Claude Code engine failed to start") | Check access to `api.anthropic.com` and that the key is valid, then update with `--setup`. The engine's own message is printed above. |
 | `⚠ Rate limit: …` | Your account's API rate limit was reached. Wait a moment, or check your limits in the Claude Console. |
 | `python` opens the Microsoft Store (Windows) | Use `py`, and install Python if needed ([step 2](#step-2-install-python-and-git)). |
-| Codes like `←[32m`, or a broken-looking prompt (Windows) | Run it in Windows Terminal, not in the separate Git Bash (mintty) window. |
+| Codes like `←[32m`, or a broken-looking prompt (Windows) | Run it in Windows Terminal, not in the local terminal of MobaXterm or the separate Git Bash (mintty) window. |
+| Windows: `irm: command not found` and `iex: command not found` | The Windows line was typed into a bash terminal (MobaXterm, Git Bash, Cygwin). Open PowerShell (Windows key, type `PowerShell`) and run it there. The macOS/Linux line, run in such a terminal, says the same. |
 | Activity lines show `PowerShell(…)` instead of `Bash(…)` (Windows) | Git for Windows is not installed: `winget install -e --id Git.Git`, then open a new terminal. |
 | Alt+Enter doesn't add a new line | End the line with `\` and press Enter. (In Windows Terminal, Alt+Enter switches to full screen.) |
 

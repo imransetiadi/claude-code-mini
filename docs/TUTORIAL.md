@@ -134,11 +134,17 @@ lalu jalankan satu baris ini. Di macOS dan Linux (terminal):
 curl -fsSL https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.sh | bash
 ```
 
-Di Windows 11 (PowerShell, di Windows Terminal):
+Di Windows 11, di **PowerShell** (tekan tombol Windows, ketik `PowerShell` atau `Terminal`, lalu Enter):
 
 ```powershell
 irm https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.ps1 | iex
 ```
+
+> **Di Windows hanya lewat PowerShell.** `irm` dan `iex` adalah perintah PowerShell; di terminal bash di Windows
+> (terminal lokal MobaXterm, Git Bash, Cygwin) baris ini gagal dengan `irm: command not found`. Sesudah terpasang,
+> jalankan claude-code-mini di Windows Terminal (PowerShell, atau Git Bash di dalam Windows Terminal), bukan di
+> terminal lokal MobaXterm atau jendela Git Bash terpisah. Di WSL, pakai baris macOS/Linux: versi Linux-nya
+> dipasang di dalam WSL.
 
 Saat muncul `Tempel API key`, tempel key-nya lalu tekan Enter. Key tidak tampil di layar. Installer mengecek key ke
 Anthropic lewat permintaan gratis; key yang ditolak (`Key ditolak Anthropic (401)`) diminta lagi, maksimal tiga kali,
@@ -307,7 +313,7 @@ Selebihnya sama dengan di macOS dan Linux. Beberapa hal yang berbeda di Windows:
 
 | Hal | Di Windows |
 |---|---|
-| Terminal | Pakai Windows Terminal, dengan PowerShell, Command Prompt, atau Git Bash. Jendela Git Bash terpisah (mintty) tidak didukung karena bukan console Windows; buka Git Bash di dalam Windows Terminal. |
+| Terminal | Pakai Windows Terminal, dengan PowerShell, Command Prompt, atau Git Bash. Jendela Git Bash terpisah (mintty) dan terminal lokal MobaXterm tidak didukung karena bukan console Windows; buka Git Bash di dalam Windows Terminal. |
 | Command yang dijalankan Claude | Lewat Git Bash kalau Git for Windows terpasang. Tanpa Git, lewat PowerShell: baris aktivitasnya `● PowerShell(…)`, dan aturan izinnya tersimpan sebagai `PowerShell(…)`. Saat mulai, ada catatan `Command dijalankan lewat PowerShell`. |
 | `!command` | Dijalankan di PowerShell (`pwsh` kalau ada, kalau tidak Windows PowerShell bawaan). |
 | Baris baru | Alt+Enter dipakai Windows Terminal untuk layar penuh. Akhiri baris dengan `\` lalu Enter. |
@@ -1083,7 +1089,8 @@ Remove-Item -Recurse -Force "$HOME\.local\share\claude-code-mini"
 | `python` membuka Microsoft Store (Windows) | Python belum terpasang, atau pakai `py`. Pasang: `winget install -e --id Python.Python.3.13`. |
 | `The term 'claude-code-mini' is not recognized…` (Windows) | `%USERPROFILE%\.local\bin` belum ada di PATH (bagian 3.5), atau buka terminal baru. |
 | `✗ pip install gagal` dengan `Access is denied` / WinError 5 atau 32 (Windows) | Ada jendela claude-code-mini lain yang masih memakai file library-nya. Tutup dulu, lalu ulangi `--setup`. |
-| Muncul kode aneh seperti `←[32m`, atau prompt berantakan (Windows) | Jalankan di Windows Terminal, bukan jendela mintty Git Bash. |
+| Muncul kode aneh seperti `←[32m`, atau prompt berantakan (Windows) | Jalankan di Windows Terminal, bukan jendela mintty Git Bash atau terminal lokal MobaXterm. |
+| Windows: `irm: command not found` dan `iex: command not found` | Baris installer Windows diketik di terminal bash (MobaXterm, Git Bash, Cygwin). Buka PowerShell (tombol Windows, ketik `PowerShell`) lalu jalankan di sana. |
 | Baris aktivitas `PowerShell(…)`, bukan `Bash(…)` (Windows) | Git for Windows belum terpasang: `winget install -e --id Git.Git`, lalu buka terminal baru. Git di lokasi lain: set `CLAUDE_CODE_GIT_BASH_PATH` ke `bash.exe`-nya. |
 | `Mesin Claude Code (claude.exe) tidak ikut terpasang` (Windows ARM64) | Pakai Python versi x64, atau `irm https://claude.ai/install.ps1 \| iex`, lalu ulangi `--setup`. |
 

@@ -137,11 +137,17 @@ The installer sets everything up and asks for your API key at the end. Have your
 curl -fsSL https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.sh | bash
 ```
 
-On Windows 11 (PowerShell, in Windows Terminal):
+On Windows 11, in **PowerShell** (press the Windows key, type `PowerShell` or `Terminal`, and press Enter):
 
 ```powershell
 irm https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.ps1 | iex
 ```
+
+> **On Windows, PowerShell only.** `irm` and `iex` are PowerShell commands; in a bash terminal on Windows (the local
+> terminal of MobaXterm, Git Bash, Cygwin) this line fails with `irm: command not found`. Afterwards, run
+> claude-code-mini in Windows Terminal (PowerShell, or Git Bash inside Windows Terminal), not in MobaXterm's local
+> terminal or the separate Git Bash window. In WSL, use the macOS/Linux line: it installs the Linux version inside
+> WSL.
 
 When `Tempel API key` ("paste the API key") appears, paste your key and press Enter. The key is not shown on screen.
 The installer checks it with Anthropic through a free request; a rejected key (`Key ditolak Anthropic (401)`) is
@@ -316,7 +322,7 @@ Everything else works as on macOS and Linux. What is different on Windows:
 
 | Topic | On Windows |
 |---|---|
-| Terminal | Use Windows Terminal, with PowerShell, Command Prompt or Git Bash. The separate Git Bash window (mintty) is not supported because it is not a Windows console; open Git Bash inside Windows Terminal instead. |
+| Terminal | Use Windows Terminal, with PowerShell, Command Prompt or Git Bash. The separate Git Bash window (mintty) and MobaXterm's local terminal are not supported because they are not Windows consoles; open Git Bash inside Windows Terminal instead. |
 | Commands Claude runs | Through Git Bash when Git for Windows is installed. Without Git, through PowerShell: the activity lines read `● PowerShell(…)`, and permission rules are saved as `PowerShell(…)`. At startup a note says `Command dijalankan lewat PowerShell` ("commands run through PowerShell"). |
 | `!command` | Runs in PowerShell (`pwsh` if installed, otherwise the built-in Windows PowerShell). |
 | New line | Windows Terminal uses Alt+Enter for full screen. End the line with `\` and press Enter. |
@@ -1118,7 +1124,8 @@ Remove-Item -Recurse -Force "$HOME\.local\share\claude-code-mini"
 | `python` opens the Microsoft Store (Windows) | Python is not installed, or use `py`. Install it with `winget install -e --id Python.Python.3.13`. |
 | `The term 'claude-code-mini' is not recognized…` (Windows) | `%USERPROFILE%\.local\bin` is not on your PATH (section 3.5), or open a new terminal. |
 | `✗ pip install gagal` with `Access is denied` / WinError 5 or 32 (Windows) | Another claude-code-mini window is still using the library files. Close it, then repeat `--setup`. |
-| Odd codes like `←[32m` appear, or the prompt looks broken (Windows) | Run it in Windows Terminal, not in the mintty Git Bash window. |
+| Odd codes like `←[32m` appear, or the prompt looks broken (Windows) | Run it in Windows Terminal, not in the mintty Git Bash window or MobaXterm's local terminal. |
+| Windows: `irm: command not found` and `iex: command not found` | The Windows installer line was typed into a bash terminal (MobaXterm, Git Bash, Cygwin). Open PowerShell (Windows key, type `PowerShell`) and run it there. |
 | Activity lines show `PowerShell(…)` instead of `Bash(…)` (Windows) | Git for Windows is not installed: `winget install -e --id Git.Git`, then open a new terminal. If Git lives somewhere unusual, set `CLAUDE_CODE_GIT_BASH_PATH` to its `bash.exe`. |
 | `Mesin Claude Code (claude.exe) tidak ikut terpasang` ("the Claude Code engine was not installed", Windows ARM64) | Use the x64 build of Python, or `irm https://claude.ai/install.ps1 \| iex`, then repeat `--setup`. |
 

@@ -419,6 +419,21 @@ finish() {
     printf '  Update ke versi terbaru: jalankan perintah instalasi yang sama lagi.\n'
 }
 
+# Terminal bash di Windows (Git Bash, MSYS2, Cygwin, terminal lokal MobaXterm): bukan console Windows, jadi
+# claude-code-mini tidak bisa dipakai di sini. Arahkan ke PowerShell, tempat installer Windows dan aplikasinya jalan.
+windows_bash() {
+    {
+        printf '%s✗%s Ini terminal bash di Windows (Git Bash, MobaXterm, Cygwin). Di Windows, claude-code-mini dipasang\n' "$C_ERR" "$C_0"
+        printf '  dan dipakai lewat PowerShell:\n'
+        printf '  1. Buka PowerShell: tekan tombol Windows, ketik %sPowerShell%s (atau %sTerminal%s), lalu Enter.\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  2. Tempel dan jalankan:\n'
+        printf '       %sirm https://raw.githubusercontent.com/%s/%s/install.ps1 | iex%s\n' "$C_B" "$REPO_SLUG" "$REF" "$C_0"
+        printf '  Sesudah terpasang, jalankan claude-code-mini di Windows Terminal (PowerShell, atau Git Bash di dalamnya),\n'
+        printf '  bukan di terminal lokal MobaXterm atau jendela Git Bash terpisah: keduanya bukan console Windows.\n'
+    } >&2
+    exit 1
+}
+
 main() {
     set -u
     set -o pipefail
@@ -429,13 +444,17 @@ main() {
     fi
     HAVE_TTY=0
     if (exec </dev/tty) 2>/dev/null; then HAVE_TTY=1; fi
-    case "$(uname -s)" in
-        Darwin) OS=macos ;;
-        Linux) OS=linux ;;
-        *) fail "Installer ini untuk macOS dan Linux. Di Windows (PowerShell): irm https://raw.githubusercontent.com/imransetiadi/claude-code-mini/main/install.ps1 | iex" ;;
-    esac
     REPO_SLUG="${CCMINI_REPO:-imransetiadi/claude-code-mini}"
     REF="${CCMINI_REF:-main}"
+    case "$(uname -s)" in
+        Darwin) OS=macos ;;
+        Linux) OS=linux ;; # termasuk WSL: memasang versi Linux di dalam WSL
+        MINGW* | MSYS* | CYGWIN*) windows_bash ;;
+        *)
+            [ "${OS:-}" != Windows_NT ] || windows_bash # variabel OS dari Windows sendiri
+            fail "Installer ini untuk macOS dan Linux. Di Windows (PowerShell): irm https://raw.githubusercontent.com/$REPO_SLUG/$REF/install.ps1 | iex"
+            ;;
+    esac
     DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/claude-code-mini"
     CONF_DIR="$HOME/.config/claude-code-mini"
     KEY_FILE="$CONF_DIR/api_key"
