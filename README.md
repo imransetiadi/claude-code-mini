@@ -1,5 +1,7 @@
 # claude-code-mini
 
+[![tests](https://github.com/imransetiadi/claude-code-mini/actions/workflows/tests.yml/badge.svg)](https://github.com/imransetiadi/claude-code-mini/actions/workflows/tests.yml)
+
 A Claude Code–style coding assistant for your terminal that runs on an **Anthropic API key** through the
 [Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/). It is a single Python file that runs on macOS, Linux
 and Windows 11, installs without sudo or admin rights, and its interface is in **Bahasa Indonesia**.
@@ -243,9 +245,30 @@ claude-code-mini is a UI and control layer on top of the Python
 reads project-level settings (`CLAUDE.md`, `.claude/settings.json`, `.claude/settings.local.json` and
 `.claude/commands/`). Claude Code stores the conversations in `~/.claude/projects/`.
 
-Tested on macOS and Ubuntu 26.04 (Python 3.13 and 3.14) and on Windows Server 2025, which shares its build with
-Windows 11 24H2, in GitHub Actions (Python 3.13, in a Windows console through ConPTY, with and without Git Bash),
-using claude-agent-sdk 0.2.178 and 0.2.179 (Claude Code engine 2.1.318 and 2.1.319).
+Used on macOS and Ubuntu 26.04 (Python 3.13 and 3.14) with claude-agent-sdk 0.2.178 and 0.2.179 (Claude Code engine
+2.1.318 and 2.1.319). The automated tests also run on Windows Server 2025, which shares its build with Windows 11
+24H2 (see [Tests](#tests)).
+
+## Tests
+
+Every push to `main` and every pull request runs the tests in GitHub Actions on Windows, Ubuntu and macOS, plus the
+oldest supported Python (3.10) on Ubuntu ([workflow](.github/workflows/tests.yml)). The end-to-end tests run the real
+Claude Code engine against a small local fake of the Messages API ([`tests/fakeapi.py`](tests/fakeapi.py)), so they
+need no API key and cost nothing. They cover `--setup`, `-p` mode and its exit codes, and the interactive UI in a
+pseudo-terminal: permission prompts, typing while Claude works, Esc, Shift+Tab, `!command` and `@file`. On Windows
+they also check a run without Git Bash.
+
+To run them yourself, after `--setup`:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install pyte ptyprocess
+.venv/bin/python tests/e2e.py
+~/.local/share/claude-code-mini/venv/bin/python tests/unit.py
+```
+
+On Windows, install `pyte pywinpty` instead, and use `.venv\Scripts\python` and
+`%USERPROFILE%\.local\share\claude-code-mini\venv\Scripts\python.exe`. The end-to-end tests give the app its own
+`HOME` inside `test-out/`, so your prompt history and conversations are left alone.
 
 ## Notes
 

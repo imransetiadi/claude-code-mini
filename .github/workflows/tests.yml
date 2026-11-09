@@ -1,0 +1,74 @@
+name: tests
+
+# End-to-end tes memakai mesin Claude Code asli + API tiruan lokal (tests/fakeapi.py): tanpa API key, tanpa biaya.
+on:
+  push:
+    branches: [main, "ci/**"]
+    paths-ignore: ["**.md", "LICENSE", ".gitignore"]
+  pull_request:
+    paths-ignore: ["**.md", "LICENSE", ".gitignore"]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-latest, macos-latest]
+        python: ["3.13"]
+        include:
+          - os: ubuntu-latest
+            python: "3.10"  # versi Python minimum yang didukung
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install test tools
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python -m pip install --disable-pip-version-check "pyte>=0.8.2" "pywinpty>=2.0"
+          else
+            python -m pip install --disable-pip-version-check "pyte>=0.8.2" "ptyprocess>=0.7"
+          fi
+
+      - name: Setup (claude-code-mini.py --setup)
+        run: python claude-code-mini.py --setup
+
+      - name: Unit tests
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then VPY="$HOME/.local/share/claude-code-mini/venv/Scripts/python.exe"
+          else VPY="$HOME/.local/share/claude-code-mini/venv/bin/python"; fi
+          "$VPY" tests/unit.py
+
+      - name: End-to-end tests (setup, -p, interactive UI)
+        if: ${{ !cancelled() }}
+        run: python tests/e2e.py
+        env:
+          CCMINI_OUT: ${{ github.workspace }}/test-out
+
+      - name: Windows without Git Bash (Claude uses PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          Rename-Item "C:\Program Files\Git" "Git-off"
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch '\\Git\\' }) -join ';'
+          python tests/e2e.py --nogit
+        env:
+          CCMINI_OUT: ${{ github.workspace }}/test-out/nogit
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with:
+          name: test-out-${{ matrix.os }}-py${{ matrix.python }}
+          path: test-out
