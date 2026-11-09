@@ -20,6 +20,16 @@ Instalasi (sekali) - Ubuntu 26.04 / Linux / macOS:
     (Ubuntu: kalau muncul error venv/ensurepip, jalankan dulu: sudo apt install -y python3-venv)
     Library juga otomatis ditawarkan untuk dipasang kalau belum ada. Tidak perlu sudo / pip global.
 
+Instalasi (sekali) - Windows 11, di PowerShell (Windows Terminal):
+    winget install -e --id Python.Python.3.13      # Python 3.10+ (python.org / winget)
+    winget install -e --id Git.Git                 # disarankan: Claude menjalankan command lewat Git Bash
+    git clone https://github.com/imransetiadi/claude-code-mini.git   # atau download ZIP dari GitHub
+    py claude-code-mini\\claude-code-mini.py --setup
+        # -> library ke %USERPROFILE%\\.local\\share\\claude-code-mini\\venv
+        #    + perintah claude-code-mini.exe di %USERPROFILE%\\.local\\bin
+        #    + menampilkan perintah PowerShell untuk PATH dan API key (key tidak tampil di layar)
+    Tanpa Git for Windows, Claude memakai PowerShell untuk menjalankan command.
+
 Pakai:
     claude-code-mini /path/ke/repo        # atau: python3 claude-code-mini.py /path/ke/repo
     claude-code-mini /path/ke/repo --model sonnet --budget 5
@@ -61,6 +71,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import atexit
+import base64
 import contextlib
 import difflib
 import inspect
@@ -99,22 +110,149 @@ except ImportError:
 try:
     import termios
     import tty
-except ImportError:  # Windows: tombol Esc tidak didukung, Ctrl+C tetap jalan
+except ImportError:  # Windows: tidak ada termios; tombol Esc dibaca lewat msvcrt
     termios = None  # type: ignore[assignment]
     tty = None  # type: ignore[assignment]
+try:
+    import msvcrt
+except ImportError:  # selain Windows
+    msvcrt = None  # type: ignore[assignment]
+
+WINDOWS = os.name == "nt"
 
 # ---------- bootstrap: pasang dependency sendiri ----------
 # Ubuntu 23.04+ (termasuk 26.04) menolak `pip install` ke Python sistem (PEP 668:
 # "externally-managed-environment"). Jadi script ini memasang library-nya sendiri ke
 # virtualenv khusus di ~/.local/share/claude-code-mini/venv lalu menjalankan ulang dirinya di sana.
+# (Windows juga di %USERPROFILE%\.local\share, bukan %LOCALAPPDATA%: Python dari Microsoft Store
+#  mengalihkan tulisan ke AppData ke folder pribadinya, sehingga venv-nya tidak ditemukan dari luar.)
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "claude-code-mini"
 VENV_DIR = DATA_DIR / "venv"
-VENV_PY = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+VENV_PY = VENV_DIR / ("Scripts/python.exe" if WINDOWS else "bin/python")
+BIN_DIR = Path.home() / ".local" / "bin"
+# Windows: launcher .exe (dibuat pip), bukan .cmd: Ctrl+C di file .cmd memunculkan "Terminate batch job (Y/N)?".
+LAUNCHER = BIN_DIR / ("claude-code-mini.exe" if WINDOWS else "claude-code-mini")
+PY_CMD = "py" if WINDOWS else "python3"  # cara memanggil Python di petunjuk yang dicetak
 REQUIREMENTS = ["claude-agent-sdk>=0.2.178", "rich>=13", "prompt_toolkit>=3.0.40",
                 "gnureadline; sys_platform == 'darwin'"]
 # Dipakai untuk cek apakah venv claude-code-mini sudah lengkap & cukup baru.
 DEPS_CHECK = ("import rich.console, prompt_toolkit; "
               "from claude_agent_sdk import PermissionUpdate, list_sessions, TaskStartedMessage")
+
+
+def quote_arg(s: str) -> str:
+    """Kutip argumen supaya perintah yang dicetak bisa langsung disalin (PowerShell/cmd di Windows, sh selain itu)."""
+    if WINDOWS:
+        return f'"{s}"' if not s or any(c in s for c in " \t&()[]{}^=;!'+,`~$%@#") else s
+    return shlex.quote(s)
+
+
+_VT_ON = False  # Windows: escape sequence ANSI (warna, kursor) sudah diaktifkan di console
+
+
+def enable_windows_vt() -> None:
+    """Windows: aktifkan pemrosesan escape sequence ANSI di console (warna rich, spinner, output yang dicetak di atas
+    prompt). Python tidak mengaktifkannya sendiri; tanpa ini kode warna tampil sebagai teks ←[32m. Dikembalikan
+    seperti semula saat keluar."""
+    global _VT_ON
+    if not WINDOWS or _VT_ON:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetStdHandle.restype = wintypes.HANDLE
+        k32.GetStdHandle.argtypes = [wintypes.DWORD]
+        k32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        restore = []
+        for std in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+            h = k32.GetStdHandle(wintypes.DWORD(std & 0xFFFFFFFF))
+            mode = wintypes.DWORD()
+            if not h or not k32.GetConsoleMode(h, ctypes.byref(mode)):
+                continue  # bukan console (diarahkan ke file / pipe)
+            # ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            if k32.SetConsoleMode(h, mode.value | 0x0001 | 0x0004):
+                _VT_ON = True
+                restore.append((h, mode.value))
+        if restore:
+            atexit.register(lambda: [k32.SetConsoleMode(h, m) for h, m in restore])
+    except Exception:
+        pass
+
+
+def is_terminal(stream: Any) -> bool:
+    """isatty() yang juga benar di Windows: di sana perangkat NUL (`< NUL`, stdin kosong di CI) ikut dianggap
+    terminal oleh isatty(), jadi dicek lagi apakah benar-benar console (GetConsoleMode berhasil)."""
+    try:
+        if not stream.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if not WINDOWS or msvcrt is None:
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        mode = wintypes.DWORD()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(wintypes.HANDLE(handle), ctypes.byref(mode)))
+    except Exception:
+        return False
+
+
+def setup_windows_console() -> None:
+    """Windows: warna & kursor ANSI aktif di console, dan output yang diarahkan ke file / pipe memakai UTF-8
+    (bawaannya cp1252, yang gagal menulis → ✓ / emoji). Hanya library bawaan: dipanggil juga oleh --setup."""
+    if not WINDOWS:
+        return
+    enable_windows_vt()
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            if is_terminal(stream):
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def win_user_env(name: str) -> str:
+    """Windows: environment variable milik user yang tersimpan permanen (registry HKCU\\Environment)."""
+    if not WINDOWS:
+        return ""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            return str(winreg.QueryValueEx(k, name)[0] or "")
+    except OSError:
+        return ""
+
+
+def same_dir(a: str, b: Path) -> bool:
+    a = os.path.expandvars(a.strip().strip('"'))
+    return bool(a) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(str(b)))
+
+
+def path_hint() -> str:
+    """Perintah (sekali saja) supaya ~/.local/bin ada di PATH."""
+    if WINDOWS:
+        return ('$p = [Environment]::GetEnvironmentVariable("Path", "User"); '
+                '[Environment]::SetEnvironmentVariable("Path", "$p;$HOME\\.local\\bin", "User"); '
+                '$env:Path += ";$HOME\\.local\\bin"')
+    rc = shell_rc()
+    return f"echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> {rc} && source {rc}"
+
+
+def key_hint() -> str:
+    """Perintah untuk menyimpan ANTHROPIC_API_KEY secara permanen tanpa menampilkan key-nya di layar."""
+    if WINDOWS:  # Read-Host -AsSecureString: tidak tampil di layar dan tidak masuk riwayat PowerShell
+        return ('$s = Read-Host "API key" -AsSecureString; $k = [Net.NetworkCredential]::new("", $s).Password; '
+                '[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $k, "User"); '
+                '$env:ANTHROPIC_API_KEY = $k; Remove-Variable s, k')
+    rc = shell_rc()
+    return f"{read_secret_cmd()}; echo; echo \"export ANTHROPIC_API_KEY=\\\"$K\\\"\" >> {rc}; unset K; source {rc}"
 
 
 def shell_rc() -> str:
@@ -132,7 +270,6 @@ def read_secret_cmd() -> str:
     if os.path.basename(os.environ.get("SHELL", "")) == "zsh":
         return 'read -rs "K?API key: "'
     return 'read -rsp "API key: " K'
-LAUNCHER = Path.home() / ".local" / "bin" / "claude-code-mini"
 
 
 def _deps_ok() -> bool:
@@ -153,7 +290,14 @@ def _deps_ok() -> bool:
 def _reexec_in_venv() -> None:
     os.environ["CCMINI_BOOTSTRAPPED"] = "1"
     sys.stdout.flush()
-    os.execv(str(VENV_PY), [str(VENV_PY), os.path.abspath(__file__), *sys.argv[1:]])
+    argv = [str(VENV_PY), os.path.abspath(__file__), *sys.argv[1:]]
+    if WINDOWS:
+        # os.execv di Windows tidak mengganti proses ini (shell mengira programnya sudah selesai), jadi jalankan
+        # sebagai proses anak dan tunggu. Ctrl+C diurus proses anak; di sini diabaikan supaya anaknya tidak ikut
+        # dimatikan (subprocess.call membunuh proses anak kalau KeyboardInterrupt muncul saat menunggu).
+        signal.signal(signal.SIGINT, lambda *_: None)
+        sys.exit(subprocess.call(argv))
+    os.execv(str(VENV_PY), argv)
 
 
 def install_deps() -> bool:
@@ -177,42 +321,204 @@ def install_deps() -> bool:
             detail = (r.stdout + r.stderr).strip()
             if detail:
                 print(detail[-600:])
-            print("✗ Gagal membuat virtualenv. Di Ubuntu/Debian pasang dulu paket venv:\n"
-                  "    sudo apt install -y python3-venv\nlalu jalankan script ini lagi.")
+            if WINDOWS:
+                print("✗ Gagal membuat virtualenv. Pakai Python dari python.org atau:\n"
+                      "    winget install -e --id Python.Python.3.13\nlalu jalankan script ini lagi dengan Python itu.")
+            else:
+                print("✗ Gagal membuat virtualenv. Di Ubuntu/Debian pasang dulu paket venv:\n"
+                      "    sudo apt install -y python3-venv\nlalu jalankan script ini lagi.")
             return False
     print(f"→ Memasang {', '.join(REQUIREMENTS)} …", flush=True)
     r = subprocess.run([str(VENV_PY), "-m", "pip", "install", "-q", "--disable-pip-version-check", "-U",
                         *REQUIREMENTS])
     if r.returncode != 0:
         print("✗ pip install gagal (lihat pesan di atas). Cek koneksi internet / proxy lalu coba lagi.")
+        if WINDOWS:
+            print("  Kalau pesannya 'Access is denied' / WinError 5 / 32: tutup dulu semua jendela claude-code-mini "
+                  "yang masih jalan (file library-nya sedang dipakai), lalu ulangi.")
         return False
     return True
 
 
+def _say(mark: str, text: str, color: str = "") -> None:
+    """Satu baris output --setup. Sengaja tanpa rich (library belum tentu terpasang di Python ini)."""
+    code = {"green": "32", "yellow": "33", "red": "31"}.get(color)
+    if code and is_terminal(sys.stdout) and (_VT_ON or not WINDOWS):
+        mark = f"\x1b[{code}m{mark}\x1b[0m"
+    print(f"{mark} {text}", flush=True)
+
+
+def build_windows_launcher(script: Path) -> Path:
+    """Windows: buat claude-code-mini.exe lewat pip (launcher .exe standar, seperti pip.exe) dari paket kecil berisi
+    satu entry point yang menjalankan `script`. Hasilnya di venv\\Scripts; setup() menyalinnya ke ~/.local/bin."""
+    import hashlib
+    import tempfile
+    import zipfile
+
+    name, ver = "ccmini_launch", "1.0"
+    info = f"{name}-{ver}.dist-info"
+    files = {
+        f"{name}.py": ("import os, runpy, sys\n"
+                       f"SCRIPT = {str(script)!r}\n\n\n"
+                       "def main():\n"
+                       "    os.environ['CCMINI_LAUNCHER'] = '1'\n"
+                       "    sys.argv[0] = SCRIPT\n"
+                       "    runpy.run_path(SCRIPT, run_name='__main__')\n"),
+        f"{info}/METADATA": f"Metadata-Version: 2.1\nName: ccmini-launch\nVersion: {ver}\n"
+                            "Summary: perintah claude-code-mini (dibuat oleh --setup)\n",
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nGenerator: claude-code-mini\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{info}/entry_points.txt": "[console_scripts]\nclaude-code-mini = ccmini_launch:main\n",
+    }
+    record = []
+    for path, text in files.items():
+        data = text.encode()
+        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        record.append(f"{path},sha256={digest},{len(data)}")
+    files[f"{info}/RECORD"] = "\n".join(record + [f"{info}/RECORD,,"]) + "\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        whl = Path(tmp) / f"{name}-{ver}-py3-none-any.whl"
+        with zipfile.ZipFile(whl, "w", zipfile.ZIP_DEFLATED) as z:
+            for path, text in files.items():
+                z.writestr(path, text)
+        r = subprocess.run([str(VENV_PY), "-m", "pip", "install", "-q", "--disable-pip-version-check",
+                            "--force-reinstall", "--no-deps", "--no-index", str(whl)], capture_output=True, text=True)
+    exe = VENV_DIR / "Scripts" / "claude-code-mini.exe"
+    if r.returncode != 0 or not exe.is_file():
+        raise OSError((r.stdout + r.stderr).strip()[-500:] or f"{exe} tidak terbentuk")
+    return exe
+
+
+def replace_file(src: Path, dst: Path) -> None:
+    """Salin src ke dst. Windows tidak bisa menimpa .exe yang sedang jalan (mis. saat `claude-code-mini --setup`),
+    tapi bisa mengganti namanya: file lama disingkirkan dulu dan dihapus pada setup berikutnya."""
+    for old in dst.parent.glob(dst.name + ".old*"):
+        with contextlib.suppress(OSError):
+            old.unlink()
+    if dst.exists():
+        try:
+            dst.unlink()
+        except OSError:
+            dst.replace(dst.with_name(f"{dst.name}.old{os.getpid()}"))
+    shutil.copy2(src, dst)
+
+
+def git_bash() -> str | None:
+    """Windows: bash.exe dari Git for Windows (dicari seperti Claude Code mencarinya)."""
+    cands = [os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")]
+    for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", ""),
+                 str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs")):
+        if base:
+            cands.append(str(Path(base) / "Git" / "bin" / "bash.exe"))
+    git = shutil.which("git")
+    if git:  # ...\Git\cmd\git.exe -> ...\Git\bin\bash.exe
+        cands.append(str(Path(git).resolve().parent.parent / "bin" / "bash.exe"))
+    return next((c for c in cands if c and Path(c).is_file()), None)
+
+
+def windows_engine_notes() -> None:
+    """Windows: cek mesin Claude Code (claude.exe) dan shell yang akan dipakai Claude untuk menjalankan command."""
+    r = subprocess.run([str(VENV_PY), "-c", "import claude_agent_sdk, pathlib; print((pathlib.Path("
+                        "claude_agent_sdk.__file__).parent / '_bundled' / 'claude.exe').is_file())"],
+                       capture_output=True, text=True)
+    native = shutil.which("claude.exe") or (BIN_DIR / "claude.exe").is_file()
+    if r.stdout.strip() == "True":
+        _say("✓", "Mesin Claude Code: claude.exe bawaan claude-agent-sdk", "green")
+    elif native:
+        _say("✓", "Mesin Claude Code: claude.exe yang terpasang di komputer ini", "green")
+    else:
+        _say("!", "Mesin Claude Code (claude.exe) tidak ikut terpasang: paket claude-agent-sdk untuk komputer ini "
+                  "(mis. Windows ARM64) tidak membawanya. Pasang sekali di PowerShell:", "yellow")
+        print("    irm https://claude.ai/install.ps1 | iex\n  atau pakai Python versi x64, lalu ulangi --setup.")
+    bash = git_bash()
+    if bash:
+        _say("✓", f"Git Bash: {bash} (Claude menjalankan command lewat Bash)", "green")
+    else:
+        _say("!", "Git for Windows belum terpasang: Claude akan menjalankan command lewat PowerShell.\n"
+                  "  Disarankan pasang Git (Claude Code paling lancar dengan Bash), lalu buka terminal baru:", "yellow")
+        print("    winget install -e --id Git.Git")
+
+
+def setup() -> None:
+    """--setup: pasang/update library ke venv sendiri, salin script ke DATA_DIR, buat perintah `claude-code-mini`.
+    Sengaja cuma memakai library bawaan Python dan dijalankan sebelum rich/claude-agent-sdk di-import: di Windows,
+    file library yang sedang dipakai proses ini tidak bisa ditimpa pip."""
+    setup_windows_console()
+    if not install_deps():
+        sys.exit(1)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    src, dst = Path(__file__).resolve(), DATA_DIR / "claude-code-mini.py"
+    if src != dst:
+        shutil.copy2(src, dst)
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        if WINDOWS:
+            replace_file(build_windows_launcher(dst), LAUNCHER)
+        else:
+            LAUNCHER.write_text(f'#!/bin/sh\nexport CCMINI_LAUNCHER=1\nexec "{VENV_PY}" "{dst}" "$@"\n')
+            LAUNCHER.chmod(0o755)
+    except OSError as e:
+        _say("✗", f"Gagal membuat perintah claude-code-mini: {e}", "red")
+        print(f"  Tetap bisa dijalankan dengan: {quote_arg(str(VENV_PY))} {quote_arg(str(dst))} <folder-repo>")
+        sys.exit(1)
+    _say("✓", f"Library terpasang ({VENV_DIR})", "green")
+    _say("✓", f"Perintah claude-code-mini dibuat ({LAUNCHER} → {dst})", "green")
+    if WINDOWS:
+        windows_engine_notes()
+    paths = os.environ.get("PATH", "").split(os.pathsep)
+    if not any(same_dir(p, BIN_DIR) for p in paths):
+        if WINDOWS and any(same_dir(p, BIN_DIR) for p in win_user_env("Path").split(";")):
+            _say("!", f"{BIN_DIR} sudah ada di PATH user, tapi belum terbaca di terminal ini: buka terminal baru.",
+                 "yellow")
+        elif WINDOWS:
+            _say("!", f"{BIN_DIR} belum ada di PATH. Jalankan ini di PowerShell (sekali saja):", "yellow")
+            print(f"    {path_hint()}")
+        else:
+            _say("!", "~/.local/bin belum ada di PATH. Jalankan ini (sekali saja):", "yellow")
+            print(f"    {path_hint()}")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        if WINDOWS and win_user_env("ANTHROPIC_API_KEY"):
+            _say("!", "ANTHROPIC_API_KEY sudah tersimpan, tapi belum terbaca di terminal ini: buka terminal baru.",
+                 "yellow")
+        elif WINDOWS:
+            _say("!", "ANTHROPIC_API_KEY belum di-set. Simpan lewat PowerShell (key tidak tampil di layar):", "yellow")
+            print(f"    {key_hint()}")
+        else:
+            _say("!", f"ANTHROPIC_API_KEY belum di-set. Tambahkan ke {shell_rc()} (key tidak tampil di layar):",
+                 "yellow")
+            print(f"    {key_hint()}")
+    example = r"C:\path\ke\repo" if WINDOWS else "/path/ke/repo"
+    if src != dst:
+        print(f"\nCoba: claude-code-mini {example}\n"
+              f"Versi baru (setelah git pull / edit {src.name}) dipasang dengan: {PY_CMD} {quote_arg(str(src))} --setup")
+    else:
+        print(f"\nCoba: claude-code-mini {example}  ·  library sudah diperbarui")
+
+
 def bootstrap() -> None:
+    setup_windows_console()
     if sys.version_info < (3, 10):
         sys.exit(f"✗ Butuh Python 3.10 atau lebih baru (sekarang {sys.version.split()[0]}).")
+    if "--setup" in sys.argv[1:]:  # dikerjakan sebelum library berat di-import (lihat setup())
+        setup()
+        sys.exit(0)
     if _deps_ok():
         return
-    reqs = " ".join(shlex.quote(r) for r in REQUIREMENTS)
+    reqs = " ".join(quote_arg(r) for r in REQUIREMENTS)
     if os.environ.get("CCMINI_BOOTSTRAPPED"):
         sys.exit(f"✗ Library masih belum bisa di-import setelah instalasi.\n"
-                 f"  Coba manual: {VENV_PY} -m pip install -U {reqs}")
+                 f"  Coba manual: {quote_arg(str(VENV_PY))} -m pip install -U {reqs}")
     if VENV_PY.exists() and Path(sys.prefix).resolve() != VENV_DIR.resolve():
         check = subprocess.run([str(VENV_PY), "-c", DEPS_CHECK], capture_output=True)
         if check.returncode == 0:
             _reexec_in_venv()  # sudah terpasang sebelumnya -> langsung pakai
-    if "--setup" in sys.argv[1:]:  # minta setup -> langsung pasang tanpa tanya
-        if not install_deps():
-            sys.exit(1)
-        _reexec_in_venv()
     print("Library yang dibutuhkan (claude-agent-sdk, rich, prompt_toolkit) belum terpasang / perlu diperbarui.",
           flush=True)
-    if not sys.stdin.isatty():
-        sys.exit(f"Jalankan sekali: python3 {shlex.quote(sys.argv[0])} --setup\n"
-                 f"atau pasang manual: python3 -m venv {VENV_DIR} && {VENV_PY} -m pip install -U {reqs}")
+    if not is_terminal(sys.stdin):
+        sys.exit(f"Jalankan sekali: {PY_CMD} {quote_arg(sys.argv[0])} --setup\n"
+                 f"atau pasang manual: {PY_CMD} -m venv {quote_arg(str(VENV_DIR))} && "
+                 f"{quote_arg(str(VENV_PY))} -m pip install -U {reqs}")
     try:
-        ans = input(f"Pasang otomatis ke {VENV_DIR}? (tidak butuh sudo) [Y/n] ").strip().lower()
+        ans = input(f"Pasang otomatis ke {VENV_DIR}? (tidak butuh {'admin' if WINDOWS else 'sudo'}) [Y/n] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         sys.exit(1)
     if ans not in ("", "y", "ya", "yes"):
@@ -235,7 +541,7 @@ try:
     from rich.spinner import Spinner
     from rich.text import Text
 except ImportError:
-    sys.exit("Library 'rich' belum terpasang. Jalankan: python3 claude-code-mini.py --setup")
+    sys.exit(f"Library 'rich' belum terpasang. Jalankan: {PY_CMD} claude-code-mini.py --setup")
 
 try:
     from prompt_toolkit import PromptSession
@@ -248,7 +554,7 @@ try:
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.styles import Style
 except ImportError:
-    sys.exit("Library 'prompt_toolkit' belum terpasang. Jalankan: python3 claude-code-mini.py --setup")
+    sys.exit(f"Library 'prompt_toolkit' belum terpasang. Jalankan: {PY_CMD} claude-code-mini.py --setup")
 
 try:
     from claude_agent_sdk import (
@@ -270,7 +576,7 @@ try:
         UserMessage,
     )
 except ImportError:
-    sys.exit("Library 'claude-agent-sdk' belum terpasang / terlalu lama. Jalankan: python3 claude-code-mini.py --setup")
+    sys.exit(f"Library 'claude-agent-sdk' belum terpasang / terlalu lama. Jalankan: {PY_CMD} claude-code-mini.py --setup")
 
 # Fitur dari SDK versi baru. Kalau SDK-nya lama, fitur ini dimatikan tanpa bikin crash.
 try:
@@ -297,9 +603,8 @@ TASK_EVENTS = tuple(c for c in (TaskStartedMessage, TaskProgressMessage, TaskUpd
 def isolate_cli_from_ctrl_c() -> None:
     """Ctrl+C di terminal dikirim ke SELURUH process group - termasuk mesin Claude Code (proses anak),
     yang lalu mematikan semua tugas background-nya dan keluar. Jalankan mesin itu di session sendiri,
-    jadi Ctrl+C cuma diterima script ini, yang meneruskannya sebagai 'interrupt' biasa."""
-    if os.name != "posix":
-        return
+    jadi Ctrl+C cuma diterima script ini, yang meneruskannya sebagai 'interrupt' biasa.
+    Windows: Ctrl+C dikirim ke semua proses di console yang sama; proses di process group baru tidak menerimanya."""
     try:
         import anyio
     except ImportError:
@@ -309,7 +614,10 @@ def isolate_cli_from_ctrl_c() -> None:
         return
 
     async def open_process(*args: Any, **kwargs: Any) -> Any:
-        kwargs.setdefault("start_new_session", True)
+        if WINDOWS:
+            kwargs["creationflags"] = (kwargs.get("creationflags") or 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs.setdefault("start_new_session", True)
         return await orig(*args, **kwargs)
 
     open_process._ccmini = True  # type: ignore[attr-defined]
@@ -319,6 +627,7 @@ def isolate_cli_from_ctrl_c() -> None:
 isolate_cli_from_ctrl_c()
 
 
+setup_windows_console()
 console = Console(highlight=False)
 
 # Log internal SDK disembunyikan; error-nya ditampilkan sendiri dengan pesan yang lebih jelas.
@@ -417,6 +726,9 @@ SHORTCUTS_TEXT = """\
   mis. "atau berhenti setelah 20 giliran" · Esc = jeda (goal tetap aktif, kirim pesan untuk lanjut) · tiap cek = 1
   panggilan API kecil · command yang belum diizinkan tetap ditanya: jawab 2 (jangan tanya lagi) atau pakai --yolo
 """
+
+if WINDOWS:  # Alt+Enter dipakai Windows Terminal untuk layar penuh: tawarkan \ saja
+    SHORTCUTS_TEXT = SHORTCUTS_TEXT.replace(" atau [cyan]Alt+Enter[/]", "")
 
 # Kata yang diterima Claude Code untuk membatalkan goal (+ padanan Indonesia yang kita ubah ke "clear").
 GOAL_CLEAR_WORDS = {"clear", "stop", "off", "reset", "none", "cancel"}
@@ -700,6 +1012,19 @@ class BgTask:
 CANCEL = "\x03"  # jawaban ask() kalau user menekan Ctrl+C / Ctrl+D (BUKAN "Enter = ya")
 
 
+def shell_command(cmd: str) -> list[str]:
+    """argv untuk '!command'. Windows: PowerShell (pwsh kalau ada, kalau tidak Windows PowerShell bawaan) dengan
+    output UTF-8; script dikirim sebagai -EncodedCommand supaya tanda kutip di dalamnya tidak rusak.
+    Selain Windows: $SHELL -c."""
+    if WINDOWS:
+        exe = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
+        script = ("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
+                  "$OutputEncoding = [Console]::OutputEncoding\n" + cmd)
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+        return [exe, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    return [os.environ.get("SHELL") or "/bin/sh", "-c", cmd]
+
+
 def ask(question: str) -> str:
     """Pertanyaan singkat (izin, pilihan nomor). Jawabannya tidak masuk riwayat input."""
     if readline:
@@ -717,7 +1042,8 @@ def ask(question: str) -> str:
 
 # ---------- tombol Esc saat Claude bekerja ----------
 class KeyWatcher:
-    """Selama Claude bekerja, terminal dipasang ke mode cbreak supaya Esc bisa ditangkap.
+    """Selama Claude bekerja tanpa prompt aktif (mode -p, cek goal saat start), tombol Esc ditangkap di sini.
+    POSIX: terminal dipasang ke mode cbreak. Windows: console dibaca lewat msvcrt tiap 50 ms.
 
     Ketikan lain selama Claude bekerja ditampung (type-ahead) dan otomatis
     diisikan ke prompt berikutnya, mirip Claude Code.
@@ -730,10 +1056,16 @@ class KeyWatcher:
         self.on_esc: Any = None
         self.active = False
         self.typed = ""
+        self.timer: asyncio.TimerHandle | None = None  # Windows: jadwal baca console berikutnya
         atexit.register(self.stop)
 
     def start(self, loop: asyncio.AbstractEventLoop, on_esc: Any) -> None:
-        if termios is None or not sys.stdin.isatty():
+        if not is_terminal(sys.stdin):
+            return
+        if termios is None:  # Windows
+            if msvcrt is not None:
+                self.loop, self.on_esc, self.saved = loop, on_esc, []
+                self.resume()
             return
         self.loop, self.on_esc = loop, on_esc
         self.fd = sys.stdin.fileno()
@@ -743,6 +1075,16 @@ class KeyWatcher:
             self.saved = None
             return
         self.resume()
+
+    def _feed(self, ch: str) -> None:
+        if ch in ("\x7f", "\b"):
+            self.typed = self.typed[:-1]
+        elif ch == "\x15":  # Ctrl+U
+            self.typed = ""
+        elif ch in ("\r", "\n"):
+            self.typed += " " if self.typed and not self.typed.endswith(" ") else ""
+        elif ch.isprintable():
+            self.typed += ch
 
     def _read(self) -> None:
         try:
@@ -766,18 +1108,33 @@ class KeyWatcher:
         if data.startswith(b"\x1b"):
             return
         for ch in data.decode("utf-8", "ignore"):
-            if ch in ("\x7f", "\b"):
-                self.typed = self.typed[:-1]
-            elif ch == "\x15":  # Ctrl+U
-                self.typed = ""
-            elif ch in ("\r", "\n"):
-                self.typed += " " if self.typed and not self.typed.endswith(" ") else ""
-            elif ch.isprintable():
-                self.typed += ch
+            self._feed(ch)
+
+    def _poll_windows(self) -> None:
+        self.timer = None
+        try:
+            while msvcrt.kbhit():  # type: ignore[union-attr]
+                ch = msvcrt.getwch()  # type: ignore[union-attr]
+                if ch in ("\x00", "\xe0"):  # tombol khusus (panah, F1, …): kode keduanya dibuang
+                    msvcrt.getwch()  # type: ignore[union-attr]
+                elif ch == "\x1b":
+                    self.on_esc()
+                else:
+                    self._feed(ch)
+        except OSError:
+            pass
+        if self.active and self.loop is not None:
+            self.timer = self.loop.call_later(0.05, self._poll_windows)
 
     def pause(self) -> None:
         """Kembalikan terminal ke mode normal (mis. untuk menanyakan izin)."""
         if not self.active:
+            return
+        self.active = False
+        if termios is None:  # Windows
+            if self.timer is not None:
+                self.timer.cancel()
+                self.timer = None
             return
         try:
             self.loop.remove_reader(self.fd)  # type: ignore[union-attr,arg-type]
@@ -787,10 +1144,13 @@ class KeyWatcher:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)  # type: ignore[union-attr,arg-type]
         except termios.error:  # type: ignore[union-attr]
             pass
-        self.active = False
 
     def resume(self) -> None:
         if self.active or self.saved is None or self.loop is None:
+            return
+        if termios is None:  # Windows
+            self.active = True
+            self.timer = self.loop.call_later(0.05, self._poll_windows)
             return
         try:
             tty.setcbreak(self.fd)  # type: ignore[union-attr]
@@ -844,7 +1204,7 @@ class PromptInput:
         self.repo = ui.repo
         self.commands: dict[str, str] = dict(LOCAL_COMMANDS)
         self.session: PromptSession | None = None
-        self.interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        self.interactive = is_terminal(sys.stdin) and is_terminal(sys.stdout)
         self.queue: deque[str] = deque()  # ketikan saat Claude bekerja yang menunggu giliran selesai (/perintah, !command, …)
         self.draft = ""  # ketikan yang belum dikirim saat prompt ditutup sementara (drain), dikembalikan ke prompt berikutnya
         self.ticker: asyncio.Task | None = None  # gambar ulang toolbar (spinner) saat Claude bekerja
@@ -853,7 +1213,8 @@ class PromptInput:
     def path_matches(self, text: str) -> list[str]:
         frag = text[1:]
         base = Path(frag).expanduser() if frag.startswith(("/", "~")) else self.repo / frag
-        folder, prefix = (base, "") if frag.endswith("/") or not frag else (base.parent, base.name)
+        ends_sep = frag.endswith(("/", "\\") if WINDOWS else "/")  # Windows: @src\ juga berarti "isi folder src"
+        folder, prefix = (base, "") if ends_sep or not frag else (base.parent, base.name)
         out = []
         for p in sorted(folder.iterdir()):
             if not p.name.startswith(prefix) or p.name in (".git", "node_modules", "__pycache__"):
@@ -947,6 +1308,7 @@ class PromptInput:
             style=PT_STYLE,
         )
         session.app.ttimeoutlen = 0.2  # Esc dikenali lebih cepat (bawaan 0.5 detik)
+        session.app.timeoutlen = 0.4  # Esc tidak menunggu 1 detik penuh untuk kemungkinan Alt+Enter (Esc, Enter)
         return session
 
     def placeholder(self) -> Any:
@@ -1577,7 +1939,7 @@ class UI:
             return f"{self.rel(path)}, {len(edits)} edit", Group(*views)
         if name == "NotebookEdit":
             return self.rel(inp.get("notebook_path", "")), None
-        if name == "Bash":
+        if name in ("Bash", "PowerShell"):  # PowerShell: tool shell Claude Code di Windows tanpa Git Bash
             desc = inp.get("description")
             cmd = inp.get("command", "")
             if full:
@@ -2032,6 +2394,10 @@ class UI:
             f"mode {data.get('permissionMode', '?')} · auth: {source} · "
             f"{len(data.get('tools', []))} tool tersedia[/]"
         )
+        tools = data.get("tools") or []
+        if "PowerShell" in tools and "Bash" not in tools:  # Windows tanpa Git Bash
+            console.print("[dim]  Command dijalankan lewat PowerShell (Git Bash tidak ditemukan · "
+                          "pasang Git for Windows untuk memakai Bash: winget install -e --id Git.Git)[/]")
 
     def on_result(self, msg: ResultMessage) -> None:
         self.spin_stop()
@@ -2383,7 +2749,7 @@ class UI:
 
     def cancelled(self, what: str) -> PermissionResultDeny:
         """Ctrl+C / Ctrl+D di pertanyaan izin = tolak (saat giliran kita: sekalian hentikan Claude)."""
-        if not sys.stdin.isatty():  # mis. CI / cron: tidak ada yang bisa menjawab pertanyaan izin
+        if not is_terminal(sys.stdin):  # mis. CI / cron: tidak ada yang bisa menjawab pertanyaan izin
             self.perm_unanswerable = True
             console.print(f"[yellow]✗ {what} ditolak: tidak ada terminal untuk menjawab.[/] "
                           "[dim]Siapkan aturan izin di .claude/settings.json, atau pakai --yolo di sandbox.[/]")
@@ -2471,9 +2837,8 @@ class UI:
         if not cmd:
             return
         console.print(Text.assemble(("! ", "bold magenta"), (cmd, "bold")))
-        shell = os.environ.get("SHELL") or "/bin/sh"
         try:
-            r = subprocess.run([shell, "-c", cmd], cwd=self.repo, capture_output=True, text=True,
+            r = subprocess.run(shell_command(cmd), cwd=self.repo, capture_output=True, encoding="utf-8",
                                errors="replace", stdin=subprocess.DEVNULL, timeout=600)
             out, err, code = r.stdout, r.stderr, r.returncode
         except KeyboardInterrupt:
@@ -2617,6 +2982,21 @@ async def pump(client: ClaudeSDKClient, ui: UI) -> None:
     ui.on_pump_error(err)
 
 
+def on_ctrl_c(loop: asyncio.AbstractEventLoop, callback: Any) -> Any:
+    """Ctrl+C -> callback di event loop, tanpa memutus await yang sedang berjalan. Mengembalikan fungsi pelepasnya.
+    Windows: event loop-nya tidak mendukung add_signal_handler, jadi lewat signal.signal + call_soon_threadsafe."""
+    try:
+        loop.add_signal_handler(signal.SIGINT, callback)
+        return lambda: loop.remove_signal_handler(signal.SIGINT)
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass
+    try:
+        old = signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(callback))
+    except ValueError:  # bukan thread utama
+        return lambda: None
+    return lambda: signal.signal(signal.SIGINT, old)
+
+
 async def run_turn(client: ClaudeSDKClient, ui: UI, prompt: str, label: str | None = None,
                    quiet: bool = False) -> None:
     """Kirim satu prompt dan tunggu hasilnya. quiet=True untuk perintah lokal cepat (cek status /goal).
@@ -2630,13 +3010,7 @@ async def run_turn(client: ClaudeSDKClient, ui: UI, prompt: str, label: str | No
 
     fut = loop.create_future()
     tui = ui.turn_task is not None
-    has_handler = False
-    if not tui:
-        try:
-            loop.add_signal_handler(signal.SIGINT, ui.interrupt_turn)
-            has_handler = True
-        except (NotImplementedError, RuntimeError):  # mis. Windows
-            pass
+    release_ctrl_c = None if tui else on_ctrl_c(loop, ui.interrupt_turn)
 
     ui.begin_turn(label)
     ui.quiet_turn, ui.turn_prompt, ui.tui_turn = quiet, prompt, tui
@@ -2656,8 +3030,8 @@ async def run_turn(client: ClaudeSDKClient, ui: UI, prompt: str, label: str | No
         ui.tui_turn = False
         ui.spin_stop()
         ui.keys.stop()
-        if has_handler:
-            loop.remove_signal_handler(signal.SIGINT)
+        if release_ctrl_c is not None:
+            release_ctrl_c()
     if not quiet:
         await ui.refresh_context(client)
 
@@ -2724,11 +3098,7 @@ async def wait_background(ui: UI) -> None:
         return
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
-    try:
-        loop.add_signal_handler(signal.SIGINT, stop.set)
-        has_handler = True
-    except (NotImplementedError, RuntimeError):
-        has_handler = False
+    release_ctrl_c = on_ctrl_c(loop, stop.set)
     ui.begin_turn(None)
     ui.waiting_bg, ui.fg_active = True, True
     ui.keys.start(loop, stop.set)
@@ -2748,8 +3118,7 @@ async def wait_background(ui: UI) -> None:
         ui.fg_active = ui.waiting_bg = False
         ui.spin_stop()
         ui.keys.stop()
-        if has_handler:
-            loop.remove_signal_handler(signal.SIGINT)
+        release_ctrl_c()
     if stop.is_set() and ui.running_bg():
         console.print("[yellow]⏹ Berhenti menunggu tugas background.[/]")
 
@@ -3159,7 +3528,7 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
                 console.print(f"[yellow]⏸ Goal belum selesai (dijeda):[/] {rich_escape(ui.goal_cond(ui.goal.condition))}")
                 if ui.session_id:
                     console.print("[dim]Lanjutkan dengan:[/]")
-                    console.print(f"  {self_command()} {shlex.quote(str(ui.repo))} --resume {ui.session_id}", soft_wrap=True)
+                    console.print(f"  {self_command()} {quote_arg(str(ui.repo))} --resume {ui.session_id}", soft_wrap=True)
                 ui.exit_code = 3
             elif ui.goal_refused or ui.goal_failed:  # ditolak / dihapus setelah error: jangan terlihat seperti sukses
                 ui.exit_code = 3
@@ -3275,8 +3644,17 @@ async def session(ui: UI, resume_id: str | None, continue_last: bool = False) ->
 
 
 def keep_awake() -> None:
-    """macOS: cegah Mac tidur selama claude-code-mini jalan (seperti `caffeinate -i`), berhenti otomatis saat keluar."""
-    if sys.platform != "darwin" or os.environ.get("CCMINI_NO_CAFFEINATE"):
+    """Cegah komputer tidur (sleep) selama claude-code-mini jalan, berhenti otomatis saat keluar.
+    macOS: `caffeinate -i`. Windows: SetThreadExecutionState (layar tetap boleh mati)."""
+    if os.environ.get("CCMINI_NO_CAFFEINATE"):
+        return
+    if WINDOWS:
+        with contextlib.suppress(Exception):
+            import ctypes
+
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        return
+    if sys.platform != "darwin":
         return
     try:
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
@@ -3289,48 +3667,11 @@ def self_command() -> str:
     """Cara menjalankan script ini lagi (untuk petunjuk --resume)."""
     if os.environ.get("CCMINI_LAUNCHER"):
         return "claude-code-mini"
-    return f"python3 {shlex.quote(sys.argv[0])}"
-
-
-def setup() -> None:
-    """--setup: pasang/update library, salin script ke ~/.local/share/claude-code-mini, buat perintah `claude-code-mini`."""
-    import shutil
-
-    # Kalau bootstrap barusan sudah memasang library, tidak perlu pasang ulang.
-    if not os.environ.get("CCMINI_BOOTSTRAPPED") and not install_deps():
-        sys.exit(1)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    src, dst = Path(__file__).resolve(), DATA_DIR / "claude-code-mini.py"
-    if src != dst:
-        shutil.copy2(src, dst)
-    if os.name == "nt":
-        console.print(f"[green]✓ Selesai.[/] Jalankan dengan: {VENV_PY} {dst} <folder-repo>")
-        return
-    LAUNCHER.parent.mkdir(parents=True, exist_ok=True)
-    LAUNCHER.write_text(f'#!/bin/sh\nexport CCMINI_LAUNCHER=1\nexec "{VENV_PY}" "{dst}" "$@"\n')
-    LAUNCHER.chmod(0o755)
-    console.print(f"[green]✓ Library terpasang[/] [dim]({VENV_DIR})[/]")
-    console.print(f"[green]✓ Perintah [bold]claude-code-mini[/bold] dibuat[/] [dim]({LAUNCHER} → {dst})[/]")
-    rc = shell_rc()
-    if str(LAUNCHER.parent) not in os.environ.get("PATH", "").split(os.pathsep):
-        console.print(
-            "[yellow]![/] ~/.local/bin belum ada di PATH. Jalankan ini (sekali saja):\n"
-            f"    echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> {rc} && source {rc}"
-        )
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        console.print(
-            f"[yellow]![/] ANTHROPIC_API_KEY belum di-set. Tambahkan ke {rc} (key tidak tampil di layar):\n"
-            f"    {read_secret_cmd()}; echo; echo \"export ANTHROPIC_API_KEY=\\\"$K\\\"\" >> {rc}; unset K; source {rc}"
-        )
-    console.print(
-        "\nCoba: [bold]claude-code-mini /path/ke/repo[/]\n"
-        f"[dim]Versi baru (setelah git pull / edit {src.name}) dipasang dengan: python3 {shlex.quote(str(src))} --setup[/]"
-        if src != dst else "\nCoba: [bold]claude-code-mini /path/ke/repo[/]  ·  library sudah diperbarui"
-    )
+    return f"{PY_CMD} {quote_arg(sys.argv[0])}"
 
 
 def main() -> None:
-    if "--setup" in sys.argv[1:]:
+    if "--setup" in sys.argv[1:]:  # biasanya sudah ditangani bootstrap(); ini cadangan kalau main() dipanggil langsung
         setup()
         return
     p = argparse.ArgumentParser(prog="claude-code-mini",
@@ -3363,8 +3704,15 @@ def main() -> None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         console.print(
             "[red]ANTHROPIC_API_KEY belum di-set.[/] Script ini sengaja hanya jalan pakai API key "
-            "supaya tidak memakai kuota subscription.\nJalankan dulu:  [bold]export ANTHROPIC_API_KEY=\"sk-ant-...\"[/]"
+            "supaya tidak memakai kuota subscription."
         )
+        if WINDOWS and win_user_env("ANTHROPIC_API_KEY"):
+            console.print("Key-nya sudah tersimpan, tapi belum terbaca di terminal ini: buka terminal baru.")
+        elif WINDOWS:
+            console.print("Simpan dulu lewat PowerShell (key tidak tampil di layar):")
+            console.print(f"  [bold]{rich_escape(key_hint())}[/]", soft_wrap=True)
+        else:
+            console.print('Jalankan dulu:  [bold]export ANTHROPIC_API_KEY="sk-ant-..."[/]')
         sys.exit(1)
 
     if not args.print:
@@ -3466,7 +3814,7 @@ def main() -> None:
     if ui.session_id and not args.print:
         console.print(f"[dim]Total biaya: ${ui.cost_total:.4f} · Lanjutkan nanti dengan:[/]"
                       + ("  [dim](goal aktif ikut dipulihkan)[/]" if ui.goal else ""))
-        console.print(f"  {self_command()} {shlex.quote(str(repo))} --resume {ui.session_id}", soft_wrap=True)
+        console.print(f"  {self_command()} {quote_arg(str(repo))} --resume {ui.session_id}", soft_wrap=True)
     elif not args.print:
         console.print("[dim]Sampai jumpa 👋[/]")
     if ui.exit_code:

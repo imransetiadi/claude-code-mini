@@ -1,8 +1,8 @@
 # claude-code-mini
 
 A Claude Code–style coding assistant for your terminal that runs on an **Anthropic API key** through the
-[Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/). It is a single Python file, installs without sudo,
-and its interface is in **Bahasa Indonesia**.
+[Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/). It is a single Python file that runs on macOS, Linux
+and Windows 11, installs without sudo or admin rights, and its interface is in **Bahasa Indonesia**.
 
 > Unofficial community project, not affiliated with or endorsed by Anthropic. "Claude" and "Claude Code" are
 > trademarks of Anthropic.
@@ -83,11 +83,13 @@ menghasilkan 20. Saya ganti menjadi a / b. …
 
 ## Requirements
 
-- macOS or Linux (tested on macOS and Ubuntu 26.04). On Windows, use WSL.
+- macOS, Linux or Windows 11. Windows has its own install steps: see [Windows 11](#windows-11).
 - Python 3.10 or newer, and git.
 - An Anthropic API key from the [Claude Console](https://platform.claude.com/settings/keys).
 
 ## Install
+
+### macOS and Linux
 
 ```bash
 git clone https://github.com/imransetiadi/claude-code-mini.git
@@ -114,6 +116,51 @@ read -rsp "API key: " K; echo; echo "export ANTHROPIC_API_KEY=\"$K\"" >> ~/.bash
 ```
 
 Check the install with `claude-code-mini --help`.
+
+### Windows 11
+
+In PowerShell, in Windows Terminal (the default terminal on Windows 11), install Python and Git:
+
+```powershell
+winget install -e --id Python.Python.3.13
+winget install -e --id Git.Git
+```
+
+Open a new terminal so that `py` and `git` are found, then:
+
+```powershell
+git clone https://github.com/imransetiadi/claude-code-mini.git
+cd claude-code-mini
+py claude-code-mini.py --setup
+```
+
+`--setup` creates the virtualenv in `%USERPROFILE%\.local\share\claude-code-mini\venv` and the
+`claude-code-mini.exe` command in `%USERPROFILE%\.local\bin`, checks the Claude Code engine and Git Bash, and prints
+the PowerShell commands you still need. They add that folder to your user `PATH` and store your API key as a user
+environment variable without showing it on screen:
+
+```powershell
+$p = [Environment]::GetEnvironmentVariable("Path", "User"); [Environment]::SetEnvironmentVariable("Path", "$p;$HOME\.local\bin", "User"); $env:Path += ";$HOME\.local\bin"
+```
+
+```powershell
+$s = Read-Host "API key" -AsSecureString; $k = [Net.NetworkCredential]::new("", $s).Password; [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $k, "User"); $env:ANTHROPIC_API_KEY = $k; Remove-Variable s, k
+```
+
+Both take effect in that window and in every terminal you open afterwards. Check the install with
+`claude-code-mini --help`.
+
+Good to know on Windows:
+
+- **Git for Windows is recommended.** Claude Code runs commands through Git Bash when it finds it. Without Git it
+  uses PowerShell, and the activity lines show `PowerShell(…)` instead of `Bash(…)`.
+- Use **Windows Terminal**, with PowerShell, Command Prompt or Git Bash. The separate Git Bash window (mintty) is not
+  supported because it is not a Windows console: open Git Bash inside Windows Terminal instead.
+- `!command` runs in PowerShell (`pwsh` if installed, otherwise Windows PowerShell).
+- Windows Terminal uses Alt+Enter for full screen. To type a multi-line message, end the line with `\`.
+- Use `py`, not `python`: on a Windows without Python, `python` opens the Microsoft Store.
+- Windows on ARM: `claude-agent-sdk` only bundles the Claude Code engine for x64. Use the x64 build of Python, or
+  install the engine with `irm https://claude.ai/install.ps1 | iex`. `--setup` tells you when it is missing.
 
 ## Usage
 
@@ -177,6 +224,18 @@ rm -f ~/.local/bin/claude-code-mini ~/.claude-code-mini_history          # unins
 rm -rf ~/.local/share/claude-code-mini
 ```
 
+On Windows (PowerShell):
+
+```powershell
+cd claude-code-mini; git pull; py claude-code-mini.py --setup            # update the script and libraries
+claude-code-mini --setup                                                 # update the libraries only
+```
+
+```powershell
+Remove-Item "$HOME\.local\bin\claude-code-mini.exe*", "$HOME\.claude-code-mini_history" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$HOME\.local\share\claude-code-mini"            # uninstall
+```
+
 ## How it works
 
 claude-code-mini is a UI and control layer on top of the Python
@@ -184,8 +243,9 @@ claude-code-mini is a UI and control layer on top of the Python
 reads project-level settings (`CLAUDE.md`, `.claude/settings.json`, `.claude/settings.local.json` and
 `.claude/commands/`). Claude Code stores the conversations in `~/.claude/projects/`.
 
-Tested on macOS and on Ubuntu 26.04 with Python 3.13 and 3.14, using claude-agent-sdk 0.2.178 and 0.2.179
-(Claude Code engine 2.1.318 and 2.1.319).
+Tested on macOS and Ubuntu 26.04 (Python 3.13 and 3.14) and on Windows Server 2025, which shares its build with
+Windows 11 24H2, in GitHub Actions (Python 3.13, in a Windows console through ConPTY, with and without Git Bash),
+using claude-agent-sdk 0.2.178 and 0.2.179 (Claude Code engine 2.1.318 and 2.1.319).
 
 ## Notes
 

@@ -3,7 +3,8 @@
 **English** · [Bahasa Indonesia](TUTORIAL.md)
 
 This guide takes you from zero to the advanced features: background agents, `/goal`, and one-shot mode for scripts
-and CI. The examples come from real sessions on macOS and Ubuntu 26.04.
+and CI. The examples come from real sessions on macOS and Ubuntu 26.04. Windows 11 users: see sections 2.3 and
+3.5.
 
 > **About the language:** the app's interface is in Bahasa Indonesia. Screen examples are shown exactly as they
 > appear, and the important messages are translated in the text or in the tables.
@@ -62,10 +63,10 @@ you ─▶ claude-code-mini ─▶ Claude Agent SDK ─▶ Claude Code engine �
 
 | Requirement | Notes |
 |---|---|
-| Operating system | macOS or Linux (tested on macOS and Ubuntu 26.04). On Windows, use WSL. |
+| Operating system | macOS, Linux or Windows 11 (tested on macOS, Ubuntu 26.04 and Windows) |
 | Python | 3.10 or newer |
 | git | to get the code and to update |
-| Anthropic API key | from the Claude Console (section 2.3) |
+| Anthropic API key | from the Claude Console (section 2.4) |
 | Internet | to `api.anthropic.com`, and to PyPI during installation |
 
 ### 2.1 macOS
@@ -90,7 +91,31 @@ sudo apt update && sudo apt install -y python3 python3-venv git
 `python3-venv` is required on Ubuntu; without it, creating the virtualenv fails. `tmux` is optional but useful on
 servers (section 16).
 
-### 2.3 Creating an API key
+### 2.3 Windows 11
+
+Open **Windows Terminal** (the default terminal on Windows 11) and install Python and Git with `winget`:
+
+```powershell
+winget install -e --id Python.Python.3.13
+winget install -e --id Git.Git
+```
+
+Close and reopen Windows Terminal so that `py` and `git` are found, then check:
+
+```powershell
+py --version    # must be 3.10 or newer
+git --version
+```
+
+- **Git for Windows is strongly recommended.** The Claude Code engine runs commands through Git Bash when it finds
+  it. Without Git, Claude uses PowerShell, and the activity lines read `● PowerShell(…)` instead of `● Bash(…)`.
+- Use the `py` command (the Python Launcher), not `python`: on a Windows without Python, `python` opens the
+  Microsoft Store.
+- **Windows on ARM** (e.g. Snapdragon laptops): the `claude-agent-sdk` package only bundles the Claude Code engine
+  for x64. Install the x64 build of Python, or install the engine yourself with
+  `irm https://claude.ai/install.ps1 | iex`. `--setup` tells you when the engine is missing.
+
+### 2.4 Creating an API key
 
 1. Open the [Claude Console](https://platform.claude.com) (the old address `console.anthropic.com` redirects
    there) and sign in or sign up.
@@ -102,6 +127,8 @@ servers (section 16).
 > screenshot.
 
 ## 3. Installation
+
+> On Windows 11, skip 3.1–3.4 and follow [section 3.5](#35-windows-11).
 
 ### 3.1 Get the code and install
 
@@ -191,6 +218,70 @@ If you see `usage: claude-code-mini …`, the installation is done.
 
 > The `claude-code-mini` command runs a **copy** of the script in `~/.local/share/claude-code-mini/`. After a
 > `git pull` or after editing the file in your clone, run `python3 claude-code-mini.py --setup` again (section 17).
+
+### 3.5 Windows 11
+
+Run everything below in PowerShell, in Windows Terminal:
+
+```powershell
+git clone https://github.com/imransetiadi/claude-code-mini.git
+cd claude-code-mini
+py claude-code-mini.py --setup
+```
+
+`--setup` does the same as in section 3.1, in Windows locations: the libraries and the copy of the script go to
+`%USERPROFILE%\.local\share\claude-code-mini`, and the `claude-code-mini.exe` command to `%USERPROFILE%\.local\bin`.
+The command is an `.exe` (not a `.cmd`), so Ctrl+C never brings up "Terminate batch job". Setup also checks the
+Claude Code engine and Git Bash. Example output on a fresh Windows:
+
+```text
+→ Membuat virtualenv di C:\Users\budi\.local\share\claude-code-mini\venv …
+→ Memasang claude-agent-sdk>=0.2.178, rich>=13, prompt_toolkit>=3.0.40, gnureadline; sys_platform == 'darwin' …
+✓ Library terpasang (C:\Users\budi\.local\share\claude-code-mini\venv)
+✓ Perintah claude-code-mini dibuat (C:\Users\budi\.local\bin\claude-code-mini.exe → C:\Users\budi\.local\share\claude-code-mini\claude-code-mini.py)
+✓ Mesin Claude Code: claude.exe bawaan claude-agent-sdk
+✓ Git Bash: C:\Program Files\Git\bin\bash.exe (Claude menjalankan command lewat Bash)
+! C:\Users\budi\.local\bin belum ada di PATH. Jalankan ini di PowerShell (sekali saja):
+    $p = [Environment]::GetEnvironmentVariable("Path", "User"); [Environment]::SetEnvironmentVariable("Path", "$p;$HOME\.local\bin", "User"); $env:Path += ";$HOME\.local\bin"
+! ANTHROPIC_API_KEY belum di-set. Simpan lewat PowerShell (key tidak tampil di layar):
+    $s = Read-Host "API key" -AsSecureString; $k = [Net.NetworkCredential]::new("", $s).Password; [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $k, "User"); $env:ANTHROPIC_API_KEY = $k; Remove-Variable s, k
+
+Coba: claude-code-mini C:\path\ke\repo
+Versi baru (setelah git pull / edit claude-code-mini.py) dipasang dengan: py C:\Users\budi\claude-code-mini\claude-code-mini.py --setup
+```
+
+`Mesin Claude Code: claude.exe bawaan claude-agent-sdk` means "Claude Code engine: the claude.exe bundled with
+claude-agent-sdk", and the Git Bash line means "Claude runs commands through Bash". Then run the printed commands,
+once. The first adds `.local\bin` to your user PATH:
+
+```powershell
+$p = [Environment]::GetEnvironmentVariable("Path", "User"); [Environment]::SetEnvironmentVariable("Path", "$p;$HOME\.local\bin", "User"); $env:Path += ";$HOME\.local\bin"
+```
+
+The second stores your API key as a user environment variable. The key is read without being shown on screen and
+does not end up in your PowerShell history:
+
+```powershell
+$s = Read-Host "API key" -AsSecureString; $k = [Net.NetworkCredential]::new("", $s).Password; [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $k, "User"); $env:ANTHROPIC_API_KEY = $k; Remove-Variable s, k
+```
+
+Both take effect in that window and in every terminal you open afterwards. Check the install:
+
+```powershell
+claude-code-mini --help
+$env:ANTHROPIC_API_KEY.Substring(0, 7) + "…"    # should print: sk-ant-…
+```
+
+Everything else works as on macOS and Linux. What is different on Windows:
+
+| Topic | On Windows |
+|---|---|
+| Terminal | Use Windows Terminal, with PowerShell, Command Prompt or Git Bash. The separate Git Bash window (mintty) is not supported because it is not a Windows console; open Git Bash inside Windows Terminal instead. |
+| Commands Claude runs | Through Git Bash when Git for Windows is installed. Without Git, through PowerShell: the activity lines read `● PowerShell(…)`, and permission rules are saved as `PowerShell(…)`. At startup a note says `Command dijalankan lewat PowerShell` ("commands run through PowerShell"). |
+| `!command` | Runs in PowerShell (`pwsh` if installed, otherwise the built-in Windows PowerShell). |
+| New line | Windows Terminal uses Alt+Enter for full screen. End the line with `\` and press Enter. |
+| Project folder | `claude-code-mini C:\projects\app`, or `claude-code-mini .` from inside the folder. |
+| Sleep | While claude-code-mini runs, Windows is kept from going to sleep (the screen may still turn off), as on macOS (section 8.3). |
 
 ## 4. Your first session
 
@@ -445,7 +536,8 @@ there is a shortcut: `IS_SANDBOX=1 claude-code-mini . --yolo`.
 | `# note` | save a note to `CLAUDE.md` |
 
 Pasted multi-line text becomes a single message automatically. In the macOS Terminal, Alt (Option)+Enter only works
-after you enable "Use Option as Meta key" (in iTerm2: Option key → Esc+). Otherwise, use `\` and then Enter.
+after you enable "Use Option as Meta key" (in iTerm2: Option key → Esc+). Otherwise, use `\` and then Enter. In
+Windows Terminal, Alt+Enter toggles full screen, so use `\` and then Enter.
 
 ### 7.1 `!command`: run a command yourself
 
@@ -457,7 +549,7 @@ after you enable "Use Option as Meta key" (in iTerm2: Option key → Esc+). Othe
 › summarize these changes and suggest a commit message
 ```
 
-- It runs in the project folder with your shell, with a 10-minute time limit.
+- It runs in the project folder with your shell (`$SHELL`; on Windows: PowerShell), with a 10-minute time limit.
 - The screen shows at most 30 lines of output; Claude receives up to the last 30,000 characters, together with your
   next message (that is what the grey line says).
 - No permission is needed, because you typed it yourself.
@@ -567,11 +659,13 @@ Tugas terakhir terhenti. Ketik 'lanjutkan' untuk meneruskan, atau beri instruksi
 ("Reconnecting (1/3)… the conversation continues, the context is kept. The last task was interrupted. Type
 'lanjutkan' to continue, or give another instruction.")
 
-### 8.3 Keeping the Mac awake
+### 8.3 Keeping the computer awake
 
-On macOS, the Mac is kept from sleeping while claude-code-mini runs (like `caffeinate -i`), so long jobs are not
-cut off. This stops automatically when you quit. To turn it off, start it with
-`CCMINI_NO_CAFFEINATE=1 claude-code-mini`.
+On macOS and Windows, the computer is kept from sleeping while claude-code-mini runs (on macOS like
+`caffeinate -i`; on Windows the screen may still turn off), so long jobs are not cut off. This stops automatically
+when you quit. To turn it off, set the environment variable `CCMINI_NO_CAFFEINATE=1`, for example
+`CCMINI_NO_CAFFEINATE=1 claude-code-mini` (in PowerShell: `$env:CCMINI_NO_CAFFEINATE = 1`, then
+`claude-code-mini`).
 
 ## 9. Managing conversations
 
@@ -863,13 +957,29 @@ Also delete the cloned folder and the `export ANTHROPIC_API_KEY=…`/PATH lines 
 longer need them. Conversation history lives in `~/.claude/projects/` (shared with the official Claude Code); delete
 it by hand if needed.
 
+On Windows (PowerShell), to update:
+
+```powershell
+cd ~\claude-code-mini; git pull; py claude-code-mini.py --setup
+claude-code-mini --setup    # libraries only
+```
+
+Close any other claude-code-mini windows before updating, because Windows cannot overwrite library files that are in
+use. To uninstall:
+
+```powershell
+Remove-Item "$HOME\.local\bin\claude-code-mini.exe*", "$HOME\.claude-code-mini_history" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$HOME\.local\share\claude-code-mini"
+[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "User")    # if you no longer need the key
+```
+
 ## 18. Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `ANTHROPIC_API_KEY belum di-set.` ("not set") | The key is not exported in this shell. Repeat section 3.3, or open a new terminal. |
+| `ANTHROPIC_API_KEY belum di-set.` ("not set") | The key is not exported in this shell. Repeat section 3.3 (Windows: 3.5), or open a new terminal. |
 | `✗ Dihentikan: Claude memakai auth '…', bukan ANTHROPIC_API_KEY.` ("stopped: Claude uses auth '…', not ANTHROPIC_API_KEY") | The Claude engine is using another login, so claude-code-mini stops on purpose to avoid drawing on a subscription. Make sure `ANTHROPIC_API_KEY` is exported in the same terminal. |
-| `✗ Butuh Python 3.10 atau lebih baru` ("needs Python 3.10 or newer") | Install a newer Python (section 2.1/2.2), then run `--setup` with it. |
+| `✗ Butuh Python 3.10 atau lebih baru` ("needs Python 3.10 or newer") | Install a newer Python (sections 2.1–2.3), then run `--setup` with it. |
 | `✗ Gagal membuat virtualenv` ("failed to create the virtualenv"), or an error about `ensurepip` | Ubuntu/Debian: `sudo apt install -y python3-venv`, then repeat `--setup`. |
 | `✗ pip install gagal` ("pip install failed") | Check your internet/proxy access to PyPI, then repeat `--setup`. |
 | `claude-code-mini: command not found` | `~/.local/bin` is not on your PATH (section 3.2), or open a new terminal. |
@@ -879,7 +989,13 @@ it by hand if needed.
 | `⚠ Rate limit: …` | Your account's API limit was reached. Wait a moment, or check your limits in the Claude Console. |
 | `Claude Code menolak mode YOLO kalau dijalankan sebagai root/sudo` ("Claude Code refuses YOLO mode as root/sudo") | Run as a normal user. In disposable containers/VMs only: `IS_SANDBOX=1`. |
 | Alt+Enter doesn't add a new line (macOS) | Enable "Use Option as Meta key" in Terminal, or end the line with `\`. |
-| The toolbar or Esc key doesn't work on Windows | Run it in WSL. |
+| Alt+Enter switches to full screen (Windows Terminal) | That is a Windows Terminal key. End the line with `\` and press Enter. |
+| `python` opens the Microsoft Store (Windows) | Python is not installed, or use `py`. Install it with `winget install -e --id Python.Python.3.13`. |
+| `The term 'claude-code-mini' is not recognized…` (Windows) | `%USERPROFILE%\.local\bin` is not on your PATH (section 3.5), or open a new terminal. |
+| `✗ pip install gagal` with `Access is denied` / WinError 5 or 32 (Windows) | Another claude-code-mini window is still using the library files. Close it, then repeat `--setup`. |
+| Odd codes like `←[32m` appear, or the prompt looks broken (Windows) | Run it in Windows Terminal, not in the mintty Git Bash window. |
+| Activity lines show `PowerShell(…)` instead of `Bash(…)` (Windows) | Git for Windows is not installed: `winget install -e --id Git.Git`, then open a new terminal. If Git lives somewhere unusual, set `CLAUDE_CODE_GIT_BASH_PATH` to its `bash.exe`. |
+| `Mesin Claude Code (claude.exe) tidak ikut terpasang` ("the Claude Code engine was not installed", Windows ARM64) | Use the x64 build of Python, or `irm https://claude.ai/install.ps1 \| iex`, then repeat `--setup`. |
 
 ## 19. FAQ
 
@@ -897,8 +1013,8 @@ monitoring in the toolbar, and the API key safeguard. On the other hand, a few t
 multiple-choice question tool (`AskUserQuestion`), IDE integration, subscription login, and user-level settings.
 
 **Does it work on Windows?**
-Through WSL (Ubuntu). On native Windows, the Esc key is not supported and the `claude-code-mini` command is not
-created.
+Yes, on Windows 11 (sections 2.3 and 3.5). Git for Windows is recommended so that Claude can use Bash. WSL (Ubuntu)
+works too; follow the Ubuntu steps there.
 
 **Where are conversations stored?**
 In `~/.claude/projects/`, in Claude Code's format. Your typing history is in `~/.claude-code-mini_history`.
@@ -954,7 +1070,7 @@ usage: claude-code-mini [-h] [--model MODEL]
 | Key | What it does |
 |---|---|
 | Enter | send the message; while Claude works = follow-up message (read after the current step), `/commands` and `!command` queue |
-| `\` + Enter, Alt+Enter | new line |
+| `\` + Enter, Alt+Enter | new line (Windows Terminal: `\` + Enter only) |
 | Tab | complete `/commands` and `@paths` |
 | ↑ / ↓ | message history; ↑ in the empty field with a queue = take the queued entry back |
 | Shift+Tab | switch the permission mode |
@@ -973,14 +1089,16 @@ usage: claude-code-mini [-h] [--model MODEL]
 | `~/.claude/projects/` | conversations (Claude Code format) |
 | `<project>/CLAUDE.md`, `<project>/.claude/` | project settings (section 15) |
 
-If `XDG_DATA_HOME` is set, the data folder moves to `$XDG_DATA_HOME/claude-code-mini`.
+If `XDG_DATA_HOME` is set, the data folder moves to `$XDG_DATA_HOME/claude-code-mini`. On Windows, `~` is
+`%USERPROFILE%` (e.g. `C:\Users\budi`) and the command is `claude-code-mini.exe`.
 
 ### E. Environment variables
 
 | Variable | What it does |
 |---|---|
 | `ANTHROPIC_API_KEY` | the API key (required) |
-| `CCMINI_NO_CAFFEINATE=1` | macOS: don't keep the Mac awake |
+| `CCMINI_NO_CAFFEINATE=1` | macOS/Windows: don't keep the computer awake |
+| `CLAUDE_CODE_GIT_BASH_PATH` | Windows: where `bash.exe` is, if Git for Windows is installed in an unusual place |
 | `IS_SANDBOX=1` | allow YOLO mode as root (disposable containers/VMs only) |
 | `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` | the limit on consecutive `/goal` rejections (Claude Code default: 8) |
 | `XDG_DATA_HOME` | where the data folder lives (default: `~/.local/share`) |
