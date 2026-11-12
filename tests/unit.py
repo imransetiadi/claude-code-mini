@@ -3,7 +3,7 @@ batas cek), giliran otomatis, toolbar, dan kolom chat saat Claude bekerja (pesan
 Jalankan dengan Python dari venv claude-code-mini (butuh claude-agent-sdk, rich, prompt_toolkit):
     ~/.local/share/claude-code-mini/venv/bin/python tests/unit.py
 (Windows: %USERPROFILE%\\.local\\share\\claude-code-mini\\venv\\Scripts\\python.exe tests\\unit.py)"""
-import argparse, sys, time
+import argparse, contextlib, io, sys, time
 from pathlib import Path
 sys.argv = ["claude-code-mini"]
 import importlib.util
@@ -453,5 +453,30 @@ real_hub = ng.WebHub()
 real_hub._push({"type": "draft", "html": "a"}); real_hub._push({"type": "user", "text": "b"})
 check("U10 draf tidak masuk riwayat replay (tab baru)", [e["type"] for e in real_hub.log] == ["user"])
 print("\nFAILS (update/upload/stream additions):", fails or "none")
+
+# ============ V) --setup: library opsional (gnureadline) tidak boleh menggagalkan instalasi ============
+calls = []
+class _R:
+    def __init__(self, rc):
+        self.returncode, self.stdout, self.stderr = rc, "", "no matching distribution"
+def fake_run(cmd, *a, **k):
+    calls.append([str(c) for c in cmd])
+    if "pip" in cmd and "install" in cmd:
+        return _R(1 if "gnureadline" in cmd else 0)
+    return _R(0)
+saved = (ng.subprocess.run, ng.VENV_PY, ng.OPTIONAL_REQUIREMENTS)
+fake_py = tmpd / "venv-python"; fake_py.write_text("")
+ng.subprocess.run, ng.VENV_PY, ng.OPTIONAL_REQUIREMENTS = fake_run, fake_py, ["gnureadline"]
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    res = ng.install_deps()
+ng.subprocess.run, ng.VENV_PY, ng.OPTIONAL_REQUIREMENTS = saved
+pips = [c for c in calls if "pip" in c]
+check("V1 gnureadline gagal (mis. Python 3.15 tanpa wheel) -> instalasi tetap berhasil, dengan catatan",
+      res is True and "dilewati" in buf.getvalue(), buf.getvalue())
+check("V2 gnureadline terpisah dari library wajib dan hanya dari wheel (tanpa compile)",
+      not any("gnureadline" in x for x in ng.REQUIREMENTS) and len(pips) == 2
+      and "--only-binary=:all:" in pips[1] and "gnureadline" in pips[1] and "gnureadline" not in pips[0], repr(pips))
+print("\nFAILS (optional deps):", fails or "none")
 
 sys.exit(1 if fails else 0)

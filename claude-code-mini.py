@@ -104,7 +104,7 @@ from typing import Any
 # Prompt utama memakai prompt_toolkit (riwayat, Tab completion, Shift+Tab, paste, status live).
 # readline cuma dipakai untuk pertanyaan singkat (izin, pilih nomor) lewat input() biasa.
 # Python dari Homebrew / python.org di macOS memakai libedit; `gnureadline` (dipasang --setup
-# di macOS) memberi GNU readline asli, jadi dipakai duluan kalau ada.
+# di macOS kalau paket siap pakainya ada) memberi GNU readline asli, jadi dipakai duluan kalau ada.
 try:
     import gnureadline as readline  # type: ignore[import-not-found]
 except ImportError:
@@ -140,8 +140,10 @@ BIN_DIR = Path.home() / ".local" / "bin"
 # Windows: launcher .exe (dibuat pip), bukan .cmd: Ctrl+C di file .cmd memunculkan "Terminate batch job (Y/N)?".
 LAUNCHER = BIN_DIR / ("claude-code-mini.exe" if WINDOWS else "claude-code-mini")
 PY_CMD = "py" if WINDOWS else "python3"  # cara memanggil Python di petunjuk yang dicetak
-REQUIREMENTS = ["claude-agent-sdk>=0.2.178", "rich>=13", "prompt_toolkit>=3.0.40",
-                "gnureadline; sys_platform == 'darwin'"]
+REQUIREMENTS = ["claude-agent-sdk>=0.2.178", "rich>=13", "prompt_toolkit>=3.0.40"]
+# Opsional (macOS): hanya dari wheel siap pakai. Untuk Python yang sangat baru (mis. 3.15 dari Homebrew) wheel-nya
+# belum ada, dan membangunnya butuh compiler C (Xcode Command Line Tools); gagal = dilewati, readline bawaan dipakai.
+OPTIONAL_REQUIREMENTS = ["gnureadline"] if sys.platform == "darwin" else []
 # Dipakai untuk cek apakah venv claude-code-mini sudah lengkap & cukup baru.
 DEPS_CHECK = ("import rich.console, prompt_toolkit; "
               "from claude_agent_sdk import PermissionUpdate, list_sessions, TaskStartedMessage")
@@ -344,6 +346,13 @@ def install_deps() -> bool:
             print("  Kalau pesannya 'Access is denied' / WinError 5 / 32: tutup dulu semua jendela claude-code-mini "
                   "yang masih jalan (file library-nya sedang dipakai), lalu ulangi.")
         return False
+    if OPTIONAL_REQUIREMENTS:
+        r = subprocess.run([str(VENV_PY), "-m", "pip", "install", "-q", "--disable-pip-version-check", "-U",
+                            "--only-binary=:all:", *OPTIONAL_REQUIREMENTS], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"  ({', '.join(OPTIONAL_REQUIREMENTS)} dilewati: belum ada paket siap pakai untuk Python "
+                  f"{sys.version_info.major}.{sys.version_info.minor} ini. Tidak masalah, claude-code-mini tetap "
+                  "jalan normal.)", flush=True)
     return True
 
 

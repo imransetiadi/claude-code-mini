@@ -180,7 +180,7 @@ ensure_python() {
     elif [ "$OS" = macos ] && command -v brew >/dev/null 2>&1; then
         if ask "Pasang Python lewat Homebrew (brew install python)?"; then
             step "brew install python …"
-            if brew install python </dev/null && find_python; then
+            if HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 brew install python </dev/null && find_python; then
                 ok "Python $(py_ver "$PY") ($PY)"
                 return 0
             fi
